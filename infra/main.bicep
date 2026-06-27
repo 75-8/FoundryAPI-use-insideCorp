@@ -64,10 +64,6 @@ module rbac 'module/rbac.bicep' = {
     foundryAccountName: foundryName
     principalId: identity.outputs.principalId
   }
-  dependsOn: [
-    foundry
-    identity
-  ]
 }
 
 // API Management
@@ -86,11 +82,6 @@ module apim 'module/apim.bicep' = {
     appInsightsId: '${rg.id}/providers/Microsoft.Insights/components/${appInsightsName}'
     managedIdentityClientId: identity.outputs.clientId
   }
-  dependsOn: [
-    foundry
-    monitoring
-    identity
-  ]
 }
 
 // Workbook
@@ -102,9 +93,6 @@ module workbook 'module/workbook.bicep' = {
     workbookName: workbookName
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
   }
-  dependsOn: [
-    monitoring
-  ]
 }
 
 output apimGatewayUrl string = apim.outputs.apimGatewayUrl

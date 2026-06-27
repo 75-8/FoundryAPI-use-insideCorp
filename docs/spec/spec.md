@@ -64,7 +64,7 @@ audience(aud)による制限は行わない。
 ## FR-004 Foundry接続
 
 APIMからAzure AI Foundryへの接続はManaged Identityを利用する。
-
+CodexはFoundry projectにあるprojectエンドポイントは利用できないため、AOAIのエンドポイントを使用する。
 API Keyは利用しない。
 
 Managed Identityには必要最小限のRBACのみ付与する。

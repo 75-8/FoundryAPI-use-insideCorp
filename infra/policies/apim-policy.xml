@@ -1,0 +1,266 @@
+<!--
+  APIM API Policy - Azure AI Foundry Proxy
+  =========================================
+  inbound:
+    1. Named Value をローカル変数にセット
+    2. IP CIDR フィルタリング
+    3. JWT 検証 (Entra ID)
+    4. JWT クレーム取得 (oid / upn / tid)
+    5. OID 許可判定
+    6. ログ用変数設定
+    7. Managed Identity による Foundry 認証
+  outbound:
+    1. レスポンスボディからトークン使用量を抽出
+    2. 監査ログ出力 (Application Insights trace)
+  on-error:
+    1. エラーログ出力
+-->
+<policies>
+  <inbound>
+    <base />
+
+    <!-- Named Value をローカル変数にセット -->
+    <set-variable name="allowedOids" value="{{allowed-oids}}" />
+    <set-variable name="allowedCidrs" value="{{allowed-cidrs}}" />
+
+    <!-- ============================================================
+         IP フィルタリング (CIDR)
+         allowedCidrs は "10.0.0.0/8;192.168.1.0/24" 形式
+         ============================================================ -->
+    <set-variable name="ipAllowed" value="@{
+      try {
+        var rawIp = context.Request.IpAddress;
+        if (string.IsNullOrEmpty(rawIp)) return false;
+        var clientIp = System.Net.IPAddress.Parse(rawIp);
+        if (clientIp.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return false;
+        var cidrs = ((string)context.Variables[&quot;allowedCidrs&quot;]).Split(';');
+        foreach (var entry in cidrs) {
+          var cidr = entry.Trim();
+          if (string.IsNullOrEmpty(cidr)) continue;
+          var slash = cidr.IndexOf('/');
+          if (slash < 0) {
+            if (cidr == rawIp) return true;
+            continue;
+          }
+          var networkAddr = System.Net.IPAddress.Parse(cidr.Substring(0, slash));
+          int prefixLen = int.Parse(cidr.Substring(slash + 1));
+          if (prefixLen == 0) return true;
+          var nb = networkAddr.GetAddressBytes();
+          var cb = clientIp.GetAddressBytes();
+          if (nb.Length != 4 || cb.Length != 4) continue;
+          uint mask = 0xFFFFFFFFu << (32 - prefixLen);
+          uint netInt = ((uint)nb[0] << 24) | ((uint)nb[1] << 16) | ((uint)nb[2] << 8) | nb[3];
+          uint cipInt = ((uint)cb[0] << 24) | ((uint)cb[1] << 16) | ((uint)cb[2] << 8) | cb[3];
+          if ((cipInt & mask) == (netInt & mask)) return true;
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    }" />
+    <choose>
+      <when condition="@(!((bool)context.Variables[&quot;ipAllowed&quot;]))">
+        <return-response>
+          <set-status code="403" reason="Forbidden" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>{"error":{"code":"403","message":"Access denied: IP address not allowed"}}</set-body>
+        </return-response>
+      </when>
+    </choose>
+
+    <!-- ============================================================
+         JWT 検証 (Entra ID v2)
+         audience 制限なし (FR-003)
+         ============================================================ -->
+    <validate-jwt header-name="Authorization"
+                  failed-validation-httpcode="401"
+                  failed-validation-error-message="Unauthorized: Invalid or missing Bearer token">
+      <openid-config url="https://login.microsoftonline.com/{{tenant-id}}/v2.0/.well-known/openid-configuration" />
+      <issuers>
+        <issuer>https://login.microsoftonline.com/{{tenant-id}}/v2.0</issuer>
+        <issuer>https://sts.windows.net/{{tenant-id}}/</issuer>
+      </issuers>
+      <required-claims>
+        <claim name="oid" />
+      </required-claims>
+    </validate-jwt>
+
+    <!-- ============================================================
+         JWT クレーム取得
+         認証後、MI 認証で Authorization ヘッダーが上書きされる前に取得する
+         ============================================================ -->
+    <set-variable name="oid" value="@{
+      try {
+        var h = context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;);
+        var t = h.StartsWith(&quot;Bearer &quot;) ? h.Substring(7) : h;
+        return t.AsJwt()?.Claims.GetValueOrDefault(&quot;oid&quot;, &quot;&quot;) ?? &quot;&quot;;
+      } catch { return &quot;&quot;; }
+    }" />
+    <set-variable name="upn" value="@{
+      try {
+        var h = context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;);
+        var t = h.StartsWith(&quot;Bearer &quot;) ? h.Substring(7) : h;
+        var jwt = t.AsJwt();
+        var v = jwt?.Claims.GetValueOrDefault(&quot;upn&quot;, &quot;&quot;) ?? &quot;&quot;;
+        if (string.IsNullOrEmpty(v)) v = jwt?.Claims.GetValueOrDefault(&quot;preferred_username&quot;, &quot;&quot;) ?? &quot;&quot;;
+        return v;
+      } catch { return &quot;&quot;; }
+    }" />
+    <set-variable name="claimTid" value="@{
+      try {
+        var h = context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;);
+        var t = h.StartsWith(&quot;Bearer &quot;) ? h.Substring(7) : h;
+        return t.AsJwt()?.Claims.GetValueOrDefault(&quot;tid&quot;, &quot;&quot;) ?? &quot;&quot;;
+      } catch { return &quot;&quot;; }
+    }" />
+
+    <!-- ============================================================
+         OID 許可判定 (FR-003)
+         allowedOids は "oid1;oid2;oid3" 形式
+         ============================================================ -->
+    <set-variable name="oidAuthorized" value="@{
+      var oid = (string)context.Variables[&quot;oid&quot;];
+      if (string.IsNullOrEmpty(oid)) return false;
+      var list = ((string)context.Variables[&quot;allowedOids&quot;]).Split(';');
+      foreach (var entry in list) {
+        if (entry.Trim() == oid) return true;
+      }
+      return false;
+    }" />
+    <choose>
+      <when condition="@(!((bool)context.Variables[&quot;oidAuthorized&quot;]))">
+        <return-response>
+          <set-status code="403" reason="Forbidden" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>{"error":{"code":"403","message":"Access denied: User not authorized"}}</set-body>
+        </return-response>
+      </when>
+    </choose>
+
+    <!-- ============================================================
+         ログ用変数設定 (AU-002)
+         ============================================================ -->
+    <set-variable name="requestId" value="@(context.RequestId.ToString())" />
+    <set-variable name="requestTimestamp" value="@(DateTime.UtcNow.ToString(&quot;o&quot;))" />
+
+    <!-- ============================================================
+         Managed Identity による Foundry 認証 (FR-004 / SEC-003)
+         Authorization ヘッダーを MI トークンで上書きする
+         ============================================================ -->
+    <authentication-managed-identity resource="https://cognitiveservices.azure.com/" client-id="{{managed-identity-client-id}}" />
+
+  </inbound>
+
+  <backend>
+    <base />
+  </backend>
+
+  <outbound>
+    <base />
+
+    <!-- ============================================================
+         レスポンスボディ読み取り (JSON のみ)
+         ============================================================ -->
+    <set-variable name="responseBody" value="@{
+      try {
+        var ct = context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;);
+        if (ct.Contains(&quot;application/json&quot;)) {
+          return context.Response.Body.As&lt;string&gt;(preserveContent: true);
+        }
+        return &quot;{}&quot;;
+      } catch { return &quot;{}&quot;; }
+    }" />
+
+    <!-- ============================================================
+         トークン使用量の抽出 (AU-003)
+         ============================================================ -->
+    <set-variable name="promptTokens" value="@{
+      try {
+        return Newtonsoft.Json.Linq.JObject
+          .Parse((string)context.Variables[&quot;responseBody&quot;])[&quot;usage&quot;]
+          ?[&quot;prompt_tokens&quot;]?.ToString() ?? &quot;0&quot;;
+      } catch { return &quot;0&quot;; }
+    }" />
+    <set-variable name="completionTokens" value="@{
+      try {
+        return Newtonsoft.Json.Linq.JObject
+          .Parse((string)context.Variables[&quot;responseBody&quot;])[&quot;usage&quot;]
+          ?[&quot;completion_tokens&quot;]?.ToString() ?? &quot;0&quot;;
+      } catch { return &quot;0&quot;; }
+    }" />
+    <set-variable name="totalTokens" value="@{
+      try {
+        return Newtonsoft.Json.Linq.JObject
+          .Parse((string)context.Variables[&quot;responseBody&quot;])[&quot;usage&quot;]
+          ?[&quot;total_tokens&quot;]?.ToString() ?? &quot;0&quot;;
+      } catch { return &quot;0&quot;; }
+    }" />
+    <set-variable name="llmModel" value="@{
+      try {
+        return Newtonsoft.Json.Linq.JObject
+          .Parse((string)context.Variables[&quot;responseBody&quot;])[&quot;model&quot;]
+          ?.ToString() ?? &quot;&quot;;
+      } catch { return &quot;&quot;; }
+    }" />
+    <set-variable name="deploymentName" value="@{
+      try {
+        var path = context.Request.Url.Path;
+        var parts = path.Split('/');
+        int idx = System.Array.IndexOf(parts, &quot;deployments&quot;);
+        return (idx &gt;= 0 &amp;&amp; idx + 1 &lt; parts.Length) ? parts[idx + 1] : &quot;&quot;;
+      } catch { return &quot;&quot;; }
+    }" />
+
+    <!-- ============================================================
+         監査ログ出力 (AU-002 / AU-003)
+         Application Insights trace テーブルに記録される
+         ============================================================ -->
+    <trace source="ai-agent-audit" severity="information">
+      <message>@{
+        return new Newtonsoft.Json.Linq.JObject(
+          new Newtonsoft.Json.Linq.JProperty("event", "llm-api-call"),
+          new Newtonsoft.Json.Linq.JProperty("requestId", context.Variables["requestId"]),
+          new Newtonsoft.Json.Linq.JProperty("timestamp", context.Variables["requestTimestamp"]),
+          new Newtonsoft.Json.Linq.JProperty("oid", context.Variables["oid"]),
+          new Newtonsoft.Json.Linq.JProperty("upn", context.Variables["upn"]),
+          new Newtonsoft.Json.Linq.JProperty("tenantId", context.Variables["claimTid"]),
+          new Newtonsoft.Json.Linq.JProperty("httpStatus", context.Response.StatusCode),
+          new Newtonsoft.Json.Linq.JProperty("durationMs", context.Elapsed.TotalMilliseconds),
+          new Newtonsoft.Json.Linq.JProperty("promptTokens", context.Variables["promptTokens"]),
+          new Newtonsoft.Json.Linq.JProperty("completionTokens", context.Variables["completionTokens"]),
+          new Newtonsoft.Json.Linq.JProperty("totalTokens", context.Variables["totalTokens"]),
+          new Newtonsoft.Json.Linq.JProperty("modelName", context.Variables["llmModel"]),
+          new Newtonsoft.Json.Linq.JProperty("deploymentName", context.Variables["deploymentName"])
+        ).ToString();
+      }</message>
+    </trace>
+
+  </outbound>
+
+  <on-error>
+    <base />
+
+    <!-- ============================================================
+         エラーログ出力
+         ============================================================ -->
+    <trace source="ai-agent-error" severity="error">
+      <message>@{
+        return new Newtonsoft.Json.Linq.JObject(
+          new Newtonsoft.Json.Linq.JProperty("event", "error"),
+          new Newtonsoft.Json.Linq.JProperty("requestId", context.RequestId),
+          new Newtonsoft.Json.Linq.JProperty("timestamp", DateTime.UtcNow.ToString("o")),
+          new Newtonsoft.Json.Linq.JProperty("oid", context.Variables.ContainsKey("oid") ? context.Variables["oid"] : ""),
+          new Newtonsoft.Json.Linq.JProperty("errorSource", context.LastError.Source),
+          new Newtonsoft.Json.Linq.JProperty("errorReason", context.LastError.Reason),
+          new Newtonsoft.Json.Linq.JProperty("errorMessage", context.LastError.Message),
+          new Newtonsoft.Json.Linq.JProperty("errorScope", context.LastError.Scope)
+        ).ToString();
+      }</message>
+    </trace>
+
+  </on-error>
+</policies>

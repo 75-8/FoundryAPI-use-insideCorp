@@ -1,4 +1,4 @@
-using './main.bicep'
+using '../main.bicep'
 
 param location = 'japaneast'
 param env = 'dev'

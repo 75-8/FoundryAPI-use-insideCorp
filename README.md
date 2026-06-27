@@ -1,6 +1,6 @@
 # FoundryAPI-use-insideCorp
 
-以下リソースをAzureにbicepを用いてデプロイする。
+以下リソースをAzureにbicepでデプロイする。
 APIM + Azure Foundry account + Log Analytics + Application Insight
 
 # 目的

@@ -16,6 +16,9 @@ var logAnalyticsWorkspaceName = 'law-${basename}'
 var appInsightsName = 'appi-${basename}'
 var identityName = '${apimName}-mi'
 var workbookName = 'wb-foundry-usage-${env}'
+var storageAccountName = take('st${basename}', 24)
+var auditApiKey = uniqueString(subscription().subscriptionId, 'audit-api-key')
+var auditLogUrl = 'https://func-http-${basename}.azurewebsites.net/api/audit'
 
 // Resource Group
 resource rg 'Microsoft.Resources/resourceGroups@2023-07-01' = {
@@ -44,6 +47,30 @@ module monitoring 'module/monitoring.bicep' = {
   }
 }
 
+// Storage Account (Audit Logs)
+module storage 'module/storage.bicep' = {
+  scope: rg
+  name: 'storage-deploy'
+  params: {
+    location: location
+    storageAccountName: storageAccountName
+  }
+}
+
+// Functions (HTTP & Batch)
+module functions 'module/functions.bicep' = {
+  scope: rg
+  name: 'functions-deploy'
+  params: {
+    location: location
+    basename: basename
+    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+    storageAccountName: storage.outputs.storageAccountName
+    storageAccountBlobEndpoint: storage.outputs.blobEndpoint
+    auditApiKey: auditApiKey
+  }
+}
+
 // Azure AI Foundry
 module foundry 'module/foundry.bicep' = {
   scope: rg
@@ -56,13 +83,16 @@ module foundry 'module/foundry.bicep' = {
   }
 }
 
-// RBAC: Grant Managed Identity access to Foundry
+// RBAC: Grant Managed Identity access to Foundry & Storage
 module rbac 'module/rbac.bicep' = {
   scope: rg
   name: 'rbac-deploy'
   params: {
     foundryAccountName: foundryName
     principalId: identity.outputs.principalId
+    storageAccountName: storage.outputs.storageAccountName
+    funcHttpPrincipalId: functions.outputs.funcHttpPrincipalId
+    funcBatchPrincipalId: functions.outputs.funcBatchPrincipalId
   }
 }
 
@@ -81,6 +111,8 @@ module apim 'module/apim.bicep' = {
     appInsightsInstrumentationKey: monitoring.outputs.appInsightsInstrumentationKey
     appInsightsId: '${rg.id}/providers/Microsoft.Insights/components/${appInsightsName}'
     managedIdentityClientId: identity.outputs.clientId
+    auditLogUrl: auditLogUrl
+    auditApiKey: auditApiKey
   }
 }
 

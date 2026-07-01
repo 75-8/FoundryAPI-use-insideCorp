@@ -145,7 +145,16 @@
          ログ用変数設定 (AU-002)
          ============================================================ -->
     <set-variable name="requestId" value="@(context.RequestId.ToString())" />
-    <set-variable name="requestTimestamp" value="@(DateTime.UtcNow.ToString(&quot;o&quot;))" />
+    <set-variable name="requestTimestamp" value="@(DateTime.UtcNow.ToString("o"))" />
+    <set-variable name="applicationId" value="@{
+      try {
+        var h = context.Request.Headers.GetValueOrDefault("Authorization", "");
+        var t = h.StartsWith("Bearer ") ? h.Substring(7) : h;
+        var jwt = t.AsJwt();
+        return jwt?.Claims.GetValueOrDefault("appid", "") ?? jwt?.Claims.GetValueOrDefault("azp", "") ?? "";
+      } catch { return ""; }
+    }" />
+    <set-variable name="subscriptionId" value="@(context.Subscription != null ? context.Subscription.Id : "")" />
 
     <!-- ============================================================
          Managed Identity による Foundry 認証 (FR-004 / SEC-003)
@@ -239,6 +248,36 @@
       }</message>
     </trace>
 
+    <!-- ============================================================
+         HTTP Trigger への監査ログ POST 送信 (AU-001)
+         ============================================================ -->
+    <send-one-way-request mode="new">
+      <set-url>{{audit-log-url}}</set-url>
+      <set-method>POST</set-method>
+      <set-header name="Content-Type" exists-action="override">
+        <value>application/json</value>
+      </set-header>
+      <set-header name="x-api-key" exists-action="override">
+        <value>{{audit-api-key}}</value>
+      </set-header>
+      <set-body>@{
+        return new Newtonsoft.Json.Linq.JObject(
+          new Newtonsoft.Json.Linq.JProperty("timestamp", context.Variables["requestTimestamp"]),
+          new Newtonsoft.Json.Linq.JProperty("requestId", context.Variables["requestId"]),
+          new Newtonsoft.Json.Linq.JProperty("oid", context.Variables["oid"]),
+          new Newtonsoft.Json.Linq.JProperty("applicationId", context.Variables["applicationId"]),
+          new Newtonsoft.Json.Linq.JProperty("subscriptionId", context.Variables["subscriptionId"]),
+          new Newtonsoft.Json.Linq.JProperty("deployment", context.Variables["deploymentName"]),
+          new Newtonsoft.Json.Linq.JProperty("model", context.Variables["llmModel"]),
+          new Newtonsoft.Json.Linq.JProperty("promptTokens", int.Parse((string)context.Variables["promptTokens"])),
+          new Newtonsoft.Json.Linq.JProperty("completionTokens", int.Parse((string)context.Variables["completionTokens"])),
+          new Newtonsoft.Json.Linq.JProperty("totalTokens", int.Parse((string)context.Variables["totalTokens"])),
+          new Newtonsoft.Json.Linq.JProperty("responseTimeMs", (int)context.Elapsed.TotalMilliseconds),
+          new Newtonsoft.Json.Linq.JProperty("statusCode", context.Response.StatusCode)
+        ).ToString();
+      }</set-body>
+    </send-one-way-request>
+
   </outbound>
 
   <on-error>
@@ -261,6 +300,49 @@
         ).ToString();
       }</message>
     </trace>
+
+    <!-- ============================================================
+         HTTP Trigger へのエラーログ POST 送信 (AU-001)
+         ============================================================ -->
+    <send-one-way-request mode="new">
+      <set-url>{{audit-log-url}}</set-url>
+      <set-method>POST</set-method>
+      <set-header name="Content-Type" exists-action="override">
+        <value>application/json</value>
+      </set-header>
+      <set-header name="x-api-key" exists-action="override">
+        <value>{{audit-api-key}}</value>
+      </set-header>
+      <set-body>@{
+        var timestamp = context.Variables.ContainsKey("requestTimestamp") ? (string)context.Variables["requestTimestamp"] : DateTime.UtcNow.ToString("o");
+        var requestId = context.Variables.ContainsKey("requestId") ? (string)context.Variables["requestId"] : context.RequestId.ToString();
+        var oid = context.Variables.ContainsKey("oid") ? (string)context.Variables["oid"] : "";
+        var appId = context.Variables.ContainsKey("applicationId") ? (string)context.Variables["applicationId"] : "";
+        var subId = context.Variables.ContainsKey("subscriptionId") ? (string)context.Variables["subscriptionId"] : "";
+        var deployment = context.Variables.ContainsKey("deploymentName") ? (string)context.Variables["deploymentName"] : "";
+        var model = context.Variables.ContainsKey("llmModel") ? (string)context.Variables["llmModel"] : "";
+        var promptTokens = context.Variables.ContainsKey("promptTokens") ? int.Parse((string)context.Variables["promptTokens"]) : 0;
+        var completionTokens = context.Variables.ContainsKey("completionTokens") ? int.Parse((string)context.Variables["completionTokens"]) : 0;
+        var totalTokens = context.Variables.ContainsKey("totalTokens") ? int.Parse((string)context.Variables["totalTokens"]) : 0;
+        var statusCode = context.Response != null ? context.Response.StatusCode : 500;
+        var responseTimeMs = (int)context.Elapsed.TotalMilliseconds;
+
+        return new Newtonsoft.Json.Linq.JObject(
+          new Newtonsoft.Json.Linq.JProperty("timestamp", timestamp),
+          new Newtonsoft.Json.Linq.JProperty("requestId", requestId),
+          new Newtonsoft.Json.Linq.JProperty("oid", oid),
+          new Newtonsoft.Json.Linq.JProperty("applicationId", appId),
+          new Newtonsoft.Json.Linq.JProperty("subscriptionId", subId),
+          new Newtonsoft.Json.Linq.JProperty("deployment", deployment),
+          new Newtonsoft.Json.Linq.JProperty("model", model),
+          new Newtonsoft.Json.Linq.JProperty("promptTokens", promptTokens),
+          new Newtonsoft.Json.Linq.JProperty("completionTokens", completionTokens),
+          new Newtonsoft.Json.Linq.JProperty("totalTokens", totalTokens),
+          new Newtonsoft.Json.Linq.JProperty("responseTimeMs", responseTimeMs),
+          new Newtonsoft.Json.Linq.JProperty("statusCode", statusCode)
+        ).ToString();
+      }</set-body>
+    </send-one-way-request>
 
   </on-error>
 </policies>

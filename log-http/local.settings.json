@@ -1,0 +1,9 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "AzureWebJobsStorage": "",
+    "AZURE_STORAGE_BLOB_ENDPOINT": "http://127.0.0.1:10000/devstoreaccount1",
+    "AUDIT_API_KEY": "dev-secret-key-123"
+  }
+}

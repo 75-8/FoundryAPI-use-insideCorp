@@ -1,0 +1,26 @@
+{
+  "name": "log-batch",
+  "version": "1.0.0",
+  "description": "Azure OpenAI Audit Log Daily Batch Function",
+  "main": "dist/src/functions/*.js",
+  "scripts": {
+    "build": "rimraf dist && tsc",
+    "watch": "tsc -w",
+    "clean": "rimraf dist",
+    "prestart": "npm run build",
+    "start": "func start",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.6.0",
+    "@azure/identity": "^4.2.0",
+    "@azure/storage-blob": "^12.24.0",
+    "applicationinsights": "^2.9.5",
+    "@dsnp/parquetjs": "^1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "rimraf": "^5.0.0"
+  }
+}

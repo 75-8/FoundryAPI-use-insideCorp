@@ -1,252 +1,234 @@
-# 要件仕様書
-## Azure AI Coding Agent Platform
+# Azure OpenAI 利用監査ログ基盤 仕様書
 
 ## 1. 目的
 
-社内利用向けのAIコーディングエージェント実行基盤をAzure上に構築する。
+Azure API Management(APIM)経由でAzure AI FoundryのLLMを利用する際の監査ログを取得し、利用状況の可視化および長期証跡保管を実現する。
 
-本システムは認証・認可、監査、コスト可視化を実現しながら、Azure AI Foundry上のLLMを安全に利用できる構成とする。
-
----
-
-# 2. 前提条件
-
-|項目|内容|
-|----|----|
-|Cloud|Microsoft Azure|
-|対象LLM|Azure AI Foundry Model Deployment|
-|Coding Agent|Codex等|
-|認証|Microsoft Entra ID(Azure cliによるtoken取得)|
-|IaC|Bicep|
-|権限|Subscription Ownerのみ（Tenant Administrator権限なし）|
-|デプロイ方法|Azure CLI + Bicep|
-
-Tenantレベルの設定変更を必要とする構成は採用しない。
+Event Hubsを利用する一般的な構成ではなく、Azure Functionsを利用することで構成を簡素化し、運用コストを削減する。
 
 ---
 
-# 3. システム構成
+# 2. システム構成
 
 `./docs/spec/diagram.md`を参照
 
 ---
 
-# 4. 機能要件
+# 3. コンポーネント一覧
 
-## FR-001 API受付
-
-APIMが全APIエンドポイントとなること。
-
-Foundryへの直接アクセスは禁止する。
-
----
-
-## FR-002 認証
-
-APIMはMicrosoft Entra IDが払い出したBearer Tokenを受け付ける。
-
-Bearer Tokenの検証はAPIM Policyで実施する。
+|サービス|用途|
+|---------|----|
+|Azure API Management|認証・利用者識別・監査情報取得|
+|Azure AI Foundry|LLM実行|
+|Azure Functions (HTTP)|監査ログ受信|
+|Azure Functions (Timer)|JSON→Parquet変換|
+|Blob Storage|JSON一時保存・Archive保管|
+|Log Analytics|検索・可視化|
+|Azure Workbook|利用分析ダッシュボード|
 
 ---
 
-## FR-003 認可
+# 4. データフロー
 
-Bearer Tokenからoid(Object ID)を取得する。
+## 4.1 API実行
 
-許可されたoidのみAPI利用可能とする。
-
-アクセス制御はAPIM Policyで実施する。
-
-audience(aud)による制限は行わない。
-
----
-
-## FR-004 Foundry接続
-
-APIMからAzure AI Foundryへの接続はManaged Identityを利用する。
-CodexはFoundry projectにあるprojectエンドポイントは利用できないため、AOAIのエンドポイントを使用する。
-API Keyは利用しない。
-
-Managed Identityには必要最小限のRBACのみ付与する。
+1. 利用者がAPIMへアクセス
+2. APIMでEntra ID認証
+3. oid取得
+4. Foundryへ転送
+5. Foundryレスポンス取得
+6. APIM Policyで監査情報生成
+7. Azure Functions HTTP TriggerへPOST
 
 ---
 
-## FR-005 応答
+## 4.2 HTTP Trigger
 
-Foundryから返却されたレスポンスをAPIM経由で利用者へ返却する。
+受信したJSONを
 
-APIMはレスポンス本文を書き換えない。
-
----
-
-# 5. 監査要件
-
-## AU-001 ログ保存
-
-APIMのDiagnostic Settingsを有効化する。
-
-保存先は以下とする。
-
-- Log Analytics（主）
-- Application Insights（副）
-
----
-
-## AU-002 利用者識別
-
-Bearer Tokenより取得したoidをログへ記録する。
-
-可能な限り以下も取得する。
-
-- oid
-- upn
-- tenant id
-- request id
-- timestamp
-
----
-
-## AU-003 LLM利用量
-
-Foundry利用時の以下を記録する。
-
-- Prompt Tokens
-- Completion Tokens
-- Total Tokens
-- Model Name
-- Deployment Name
-
----
-
-## AU-004 コスト分析
-
-ユーザー単位で以下を確認できること。
-
-- 利用回数
-- Token消費量
-- 推定利用料金
-- モデル別利用量
-
----
-
-## AU-005 可視化
-
-Log AnalyticsをデータソースとしてAzure WorkbookまたはDashboardを構築する。
-
-最低限以下を表示する。
-
-- ユーザー別Token消費量
-- 日別利用量
-- モデル別利用量
-- 推定コスト
-- エラー率
-- API呼び出し数
-
----
-
-# 6. セキュリティ要件
-
-## SEC-001
-
-Azure Foundry account は Managed Identity のみ許可する。
-
----
-
-## SEC-002
-
-APIM以外からFoundryを利用しない構成とする。
-
----
-
-## SEC-003
-
-Foundry は API Keyを利用せず無効にする。
-
----
-
-## SEC-004
-
-APIMはoidによるアクセス制御を実施する。
-
----
-
-## SEC-005
-
-認証情報をIaCへハードコードしない。
-
----
-
-# 7. APIM Policy
-
-Policyは以下ファイルで管理する。
-
-`./infra/policies/apim-policy.xml`
-
-
-Policyには最低限以下を実装する。
-
-- JWT検証
-- oid取得
-- oid許可判定
-- Managed IdentityによるFoundry認証
-- ログ出力用変数設定
-- エラーハンドリング
-
----
-
-# 8. IaC要件
-
-IaCはBicepのみ利用する。
-デプロイにはPowerShellを使用する。
-
-Portal手順に依存しない。
-
-デプロイ対象例
-
-- Resource Group
-- API Management
-- Azure AI Foundry
-- Model Deployment
-- Managed Identity
+- Blob Storage(Raw)
 - Log Analytics
-- Application Insights
-- Workbook
-- Diagnostic Settings
-- RBAC
+
+へ同時書き込みする。
+
+レスポンスはHTTP200を返却する。
 
 ---
 
-# 9. 品質要件
+## 4.3 日次バッチ
 
-Bicepは以下を満たすこと。
+毎日00:00(JST)
 
-```
-az bicep lint
-```
+Timer Triggerが起動
 
-エラーなし
+↓
 
-```
-az bicep build
-```
+Blob内JSONを取得
 
-エラーなし
+↓
 
-警告は原則ゼロを目標とする。
+Parquetへ変換
+
+↓
+
+Archive Containerへ保存
+
+↓
+
+JSON削除
 
 ---
 
-# 10. 運用要件
+# 5. APIM取得項目
 
-デプロイはAzure CLIから実行できること。
+|項目|説明|
+|----|----|
+|Timestamp|UTC|
+|RequestId|APIM Request ID|
+|OID|Entra Object ID|
+|ApplicationId|Client ID|
+|Subscription ID|APIM Subscription|
+|Model|利用モデル|
+|Deployment|Foundry Deployment|
+|Prompt Tokens|入力Token|
+|Completion Tokens|出力Token|
+|Total Tokens|総Token|
+|Status Code|HTTP Status|
+|Response Time|応答時間(ms)|
 
-環境差異はParameter Fileで吸収する。
+---
 
-少なくとも以下環境へ対応する。
+# 6. JSONフォーマット
 
-- dev
-- test
-- prod
+```json
+{
+  "timestamp": "",
+  "requestId": "",
+  "oid": "",
+  "applicationId": "",
+  "subscriptionId": "",
+  "deployment": "",
+  "model": "",
+  "promptTokens": 0,
+  "completionTokens": 0,
+  "totalTokens": 0,
+  "responseTimeMs": 0,
+  "statusCode": 200
+}
+```
+
+---
+
+# 7. Blob Storage設計
+
+## Container
+
+```
+raw-log
+archive-log
+```
+
+### Raw(JSON)
+
+```
+raw-log/
+    2026/
+        07/
+            01/
+                xxxx.json
+```
+
+保持期間
+
+7日
+
+Lifecycle Managementにより自動削除。
+
+---
+
+### Archive
+
+```
+archive-log/
+    year=2026/
+        month=07/
+            day=01/
+                audit.parquet
+```
+
+保持期間
+
+2年間
+
+オンデマンド分析時のみ利用する。
+
+---
+
+# 8. Log Analytics
+
+用途
+
+- 利用者検索
+- Token集計
+- ダッシュボード
+- 監査対応
+
+保持期間
+
+365日（推奨）
+
+それ以降はBlob Archiveを利用する。
+
+---
+
+# 9. Azure Workbook
+
+可視化内容
+
+- 日次Token利用量
+- ユーザー別利用量
+- モデル別利用量
+- エラー率
+- レスポンス時間
+- Top利用者
+
+---
+
+# 10. Azure Functions設計
+
+## HTTP Trigger
+
+Runtime
+
+- Node.js 22
+- TypeScript
+
+責務
+
+- JSONバリデーション
+- Blob保存
+- Log Analytics送信
+- エラーログ
+
+ビジネスロジックは持たない。
+
+---
+
+## Timer Trigger
+
+スケジュール
+
+```
+0 0 0 * * *
+```
+
+責務
+
+- JSON取得
+- JSON結合
+- Parquet生成
+- Archive保存
+- Raw削除
 
 ---
 
@@ -254,28 +236,75 @@ az bicep build
 
 ## 可用性
 
-Azureマネージドサービスを利用する。
+Azure Functions Consumption
+
+Blob Storage LRS
+
+監査ログはベストエフォートとする。
+
+---
+
+## セキュリティ
+
+Managed Identity利用
+
+Storage Keyは利用しない。
+
+通信はPrivate Endpointを推奨。
 
 ---
 
 ## 保守性
 
-Bicep Moduleへ分割する。
+Functionsは以下2プロジェクトへ分離する。
 
-責務を明確にする。
+```
+log-http/
 
----
+log-batch/
+```
 
-## 可観測性
-
-すべてのAPI要求について以下が追跡可能であること。
-
-- Request ID
-- oid
-- モデル
-- Token利用量
-- レスポンス時間
-- HTTP Status
+責務分離を徹底する。
 
 ---
 
+# 12. コスト最適化
+
+Event Hubsを利用しない。
+
+JSONを即時Parquet化しない。
+
+日次バッチにまとめることで
+
+- Storage Transaction
+- Functions実行回数
+- CPU利用時間
+
+を最小化する。
+
+想定ログ件数（1万件/日未満）ではConsumption Planで十分運用可能である。
+
+---
+
+# 13. 採用理由
+
+## Event Hubs採用時
+
+- Namespace管理
+- Throughput Unit
+- Capture
+- Functions Trigger
+
+が必要となる。
+
+監査ログ規模ではオーバースペックである。
+
+## 本構成
+
+HTTP Triggerのみで受信し、
+
+Blobをキュー代替として利用することで
+
+十分な耐障害性と低コストを実現する。
+
+年間運用コストを抑えつつ、監査証跡として必要な保存要件（2年間）を満たす。

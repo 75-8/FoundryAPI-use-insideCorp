@@ -1,67 +1,57 @@
-# diagram
+# システム構成図
 
-## システム構成図
+## 監査ログ基盤 構成図
 
 ```mermaid
 flowchart LR
 
-    Client["Client<br/>(Codex)"]
+Client["Client"]
 
-    subgraph Azure["Azure Subscription"]
+APIM["Azure API Management"]
 
-        APIM["Azure API Management"]
+Foundry["Azure AI Foundry<br/>Codex"]
 
-        Foundry["Azure AI Foundry Account"]
+FuncHttp["Azure Functions<br/>HTTP Trigger"]
 
-        Model["LLM Deployment"]
+BlobHot["Blob Storage<br/>Raw JSON"]
 
-        MI["Managed Identity"]
+FuncTimer["Azure Functions<br/>Timer Trigger"]
 
-        LA["Log Analytics"]
+BlobArchive["Blob Storage<br/>Parquet Archive"]
 
-        AI["Application Insights"]
+LogAnalytics["Log Analytics"]
 
-        Workbook["Azure Workbook<br/>or Dashboard"]
+Workbook["Azure Workbook"]
 
-    end
+Client --> APIM
 
-    Entra["Microsoft Entra ID"]
+APIM --> Foundry
 
-    Client -->|"Bearer Token"| APIM
+APIM --> FuncHttp
 
-    APIM -->|"JWT Validation"| Entra
+FuncHttp --> BlobHot
 
-    APIM -.->|"Acquire Access Token<br/>via Managed Identity"| MI
+FuncHttp --> LogAnalytics
 
-    MI --> Foundry
+FuncTimer --> BlobHot
 
-    Foundry --> Model
+BlobHot --> FuncTimer
 
-    Model --> Foundry
-
-    Foundry -->|"LLM Response"| APIM
-
-    APIM -->|"Response"| Client
-
-    APIM -->|"Diagnostic Logs"| LA
-
-    APIM -->|"Telemetry"| AI
-
-    LA --> Workbook
-
-    AI --> Workbook
+FuncTimer --> BlobArchive
 ```
 
-## リクエストシーケンス
+## データフロー シーケンス
 
 ```mermaid
 sequenceDiagram
 
-    participant Client as "Client (Codex)"
+    participant Client as "Client"
     participant APIM as "Azure API Management"
     participant Entra as "Microsoft Entra ID"
     participant Foundry as "Azure AI Foundry"
-    participant LLM as "LLM Deployment"
+    participant FuncHttp as "Azure Functions (HTTP)"
+    participant Blob as "Blob Storage"
+    participant LA as "Log Analytics"
 
     Client->>APIM: HTTPS Request + Bearer Token
 
@@ -71,48 +61,37 @@ sequenceDiagram
 
     APIM->>Foundry: Request (Managed Identity)
 
-    Foundry->>LLM: Prompt
-
-    LLM-->>Foundry: Completion
-
-    Foundry-->>APIM: Response
+    Foundry-->>APIM: LLM Response
 
     APIM-->>Client: HTTPS Response
+
+    APIM->>FuncHttp: POST 監査情報
+
+    FuncHttp->>Blob: JSON保存 (raw-log)
+
+    FuncHttp->>LA: ログ送信
 ```
 
-## 監査・メトリクス収集
+## 日次バッチ フロー
 
 ```mermaid
 flowchart TD
 
-    APIM["Azure API Management"]
+    Timer["Timer Trigger<br/>毎日 00:00 JST"]
 
-    Token["Bearer Token"]
+    GetJSON["Blob内JSON取得"]
 
-    OID["OID Extraction"]
+    Convert["Parquetへ変換"]
 
-    Metrics["Token Usage<br/>Prompt / Completion / Total"]
+    Save["Archive Containerへ保存"]
 
-    LA["Log Analytics"]
+    Delete["JSON削除"]
 
-    AI["Application Insights"]
+    Timer --> GetJSON
 
-    Workbook["Azure Workbook<br/>or Dashboard"]
+    GetJSON --> Convert
 
-    APIM --> Token
+    Convert --> Save
 
-    Token --> OID
-
-    APIM --> Metrics
-
-    OID --> LA
-
-    Metrics --> LA
-
-    APIM --> AI
-
-    LA --> Workbook
-
-    AI --> Workbook
+    Save --> Delete
 ```
-

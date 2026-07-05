@@ -2,29 +2,44 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/fu
 import { BlobServiceClient } from '@azure/storage-blob';
 import { DefaultAzureCredential } from '@azure/identity';
 import * as appInsights from 'applicationinsights';
+import {
+  AuditLogRecord,
+  AuditLogPayload,
+  AuditSuccessResponse,
+  AuditErrorResponse,
+  FunctionConfig,
+  REQUIRED_AUDIT_FIELDS,
+} from '../types/auditLog';
+
+// ---------------------------------------------------------------------------
+// 環境変数の一元管理 (シークレット候補は FunctionConfig に定義済み)
+// ---------------------------------------------------------------------------
+
+/** process.env から設定値を読み込む */
+function loadConfig(): FunctionConfig {
+  return {
+    /** [シークレット] x-api-key ヘッダーの期待値。Key Vault / App Settings で管理する。 */
+    auditApiKey: process.env.AUDIT_API_KEY,
+    /** Blob Storage エンドポイント URL */
+    blobEndpoint: process.env.AZURE_STORAGE_BLOB_ENDPOINT,
+    /** ローカル開発用ストレージエミュレータ接続文字列 */
+    azureWebJobsStorage: process.env.AzureWebJobsStorage,
+    /** [シークレット] Application Insights 接続文字列。Key Vault / App Settings で管理する。 */
+    appInsightsConnStr: process.env.APPLICATIONINSIGHTS_CONNECTION_STRING,
+  };
+}
+
+const config = loadConfig();
 
 // Initialize Application Insights SDK
-if (process.env.APPLICATIONINSIGHTS_CONNECTION_STRING) {
+if (config.appInsightsConnStr) {
   appInsights.setup().start();
 }
 
-// Interface of incoming audit log record
-interface AuditLogRecord {
-  timestamp: string;
-  requestId: string;
-  oid: string;
-  applicationId: string;
-  subscriptionId: string;
-  deployment: string;
-  model: string;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  responseTimeMs: number;
-  statusCode: number;
-}
+// ---------------------------------------------------------------------------
+// Blob Service Client (コールドスタート高速化のためキャッシュ)
+// ---------------------------------------------------------------------------
 
-// Client lazily initialized to speed up cold starts
 let cachedBlobServiceClient: BlobServiceClient | null = null;
 
 function getBlobServiceClient(): BlobServiceClient {
@@ -32,67 +47,73 @@ function getBlobServiceClient(): BlobServiceClient {
     return cachedBlobServiceClient;
   }
 
-  const endpoint = process.env.AZURE_STORAGE_BLOB_ENDPOINT;
-  if (!endpoint) {
+  const { blobEndpoint, azureWebJobsStorage } = config;
+
+  if (!blobEndpoint) {
     throw new Error('AZURE_STORAGE_BLOB_ENDPOINT environment variable is missing.');
   }
 
   // Handle local development storage emulator
-  if (endpoint.startsWith('http://127.0.0.1') || endpoint.includes('localhost')) {
-    const connStr = process.env.AzureWebJobsStorage || 'UseDevelopmentStorage=true';
+  if (blobEndpoint.startsWith('http://127.0.0.1') || blobEndpoint.includes('localhost')) {
+    const connStr = azureWebJobsStorage ?? 'UseDevelopmentStorage=true';
     cachedBlobServiceClient = BlobServiceClient.fromConnectionString(connStr);
   } else {
-    // Managed Identity auth for production
-    cachedBlobServiceClient = new BlobServiceClient(endpoint, new DefaultAzureCredential());
+    // Managed Identity auth for production (SEC-001, FR-004)
+    cachedBlobServiceClient = new BlobServiceClient(blobEndpoint, new DefaultAzureCredential());
   }
 
   return cachedBlobServiceClient;
 }
+
+// ---------------------------------------------------------------------------
+// HTTP トリガーハンドラー
+// ---------------------------------------------------------------------------
 
 export async function auditLogHttp(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
   context.log(`Audit log HTTP trigger received a request.`);
 
   // 1. Authenticate Request
   const apiKey = request.headers.get('x-api-key');
-  const expectedApiKey = process.env.AUDIT_API_KEY;
+  const { auditApiKey } = config;
 
-  if (expectedApiKey && apiKey !== expectedApiKey) {
+  if (auditApiKey && apiKey !== auditApiKey) {
     context.warn(`Unauthorized access attempt. Invalid x-api-key.`);
-    return { status: 401, body: JSON.stringify({ error: 'Unauthorized: Invalid API key.' }) };
+    const errBody: AuditErrorResponse = { error: 'Unauthorized: Invalid API key.' };
+    return { status: 401, body: JSON.stringify(errBody) };
   }
 
   // 2. Parse and Validate Body
-  let body: Partial<AuditLogRecord>;
+  let body: AuditLogPayload;
   try {
-    body = (await request.json()) as Partial<AuditLogRecord>;
-  } catch (err: any) {
-    context.error(`Failed to parse body JSON: ${err.message}`);
-    return { status: 400, body: JSON.stringify({ error: 'Invalid JSON payload.' }) };
+    body = (await request.json()) as AuditLogPayload;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    context.error(`Failed to parse body JSON: ${message}`);
+    const errBody: AuditErrorResponse = { error: 'Invalid JSON payload.' };
+    return { status: 400, body: JSON.stringify(errBody) };
   }
 
-  if (
-    !body.timestamp ||
-    !body.requestId ||
-    body.oid === undefined ||
-    body.promptTokens === undefined ||
-    body.completionTokens === undefined ||
-    body.totalTokens === undefined ||
-    body.responseTimeMs === undefined ||
-    body.statusCode === undefined
-  ) {
-    context.warn(`Validation failed. Missing required fields in audit payload.`);
-    return {
-      status: 400,
-      body: JSON.stringify({
-        error: 'Missing required audit fields. Verify timestamp, requestId, oid, promptTokens, completionTokens, totalTokens, responseTimeMs, and statusCode.',
-      }),
+  // 必須フィールドの一括バリデーション (REQUIRED_AUDIT_FIELDS を使用)
+  const missingFields = REQUIRED_AUDIT_FIELDS.filter(
+    (field) => body[field] === undefined || body[field] === null || body[field] === '',
+  );
+
+  if (missingFields.length > 0) {
+    context.warn(`Validation failed. Missing required fields: ${missingFields.join(', ')}`);
+    const errBody: AuditErrorResponse = {
+      error: `Missing required audit fields: ${missingFields.join(', ')}.`,
     };
+    return { status: 400, body: JSON.stringify(errBody) };
   }
 
+  // 型が確定しているため as キャストでレコードを構築
   const logRecord: AuditLogRecord = {
     timestamp: String(body.timestamp),
     requestId: String(body.requestId),
     oid: String(body.oid),
+    // AU-002: upn, tenantId は可能な限り取得する (任意)
+    upn: String(body.upn ?? ''),
+    tenantId: String(body.tenantId ?? ''),
     applicationId: String(body.applicationId ?? ''),
     subscriptionId: String(body.subscriptionId ?? ''),
     deployment: String(body.deployment ?? ''),
@@ -104,18 +125,18 @@ export async function auditLogHttp(request: HttpRequest, context: InvocationCont
     statusCode: Number(body.statusCode),
   };
 
-  // 3. Forward to Log Analytics / App Insights
+  // 3. Forward to Log Analytics / App Insights (AU-001)
   if (appInsights.defaultClient) {
     appInsights.defaultClient.trackTrace({
       message: JSON.stringify(logRecord),
       severity: appInsights.Contracts.SeverityLevel.Information,
     });
   } else {
-    // Fallback console log which gets captured by default workspace diagnostic logging
+    // Fallback: default workspace diagnostic logging が拾う (AU-001)
     context.log(JSON.stringify(logRecord));
   }
 
-  // 4. Save to Blob Storage (Raw Container)
+  // 4. Save to Blob Storage - Raw Container (AU-001)
   try {
     const date = new Date(logRecord.timestamp);
     const isValidDate = !isNaN(date.getTime());
@@ -134,15 +155,17 @@ export async function auditLogHttp(request: HttpRequest, context: InvocationCont
     });
 
     context.log(`Successfully uploaded audit log raw JSON to blob: ${blobName}`);
-  } catch (err: any) {
-    context.error(`Failed to upload raw log to blob storage: ${err.message}`);
-    // Non-blocking failure, return 200 as audit log is best effort at destination
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    context.error(`Failed to upload raw log to blob storage: ${message}`);
+    // Non-blocking failure — 監査ログはベストエフォートで配信する
   }
 
+  const successBody: AuditSuccessResponse = { status: 'Success', requestId: logRecord.requestId };
   return {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status: 'Success', requestId: logRecord.requestId }),
+    body: JSON.stringify(successBody),
   };
 }
 

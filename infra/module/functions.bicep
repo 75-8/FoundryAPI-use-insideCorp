@@ -50,12 +50,36 @@ resource funcHttp 'Microsoft.Web/sites@2022-09-01' = {
           value: storageAccountName
         }
         {
+          name: 'AzureWebJobsStorage__blobServiceUri'
+          value: storageAccountBlobEndpoint
+        }
+        {
+          name: 'AzureWebJobsStorage__queueServiceUri'
+          value: storageAccountQueueEndpoint
+        }
+        {
+          name: 'AUDIT_STORAGE_ACCOUNT_NAME'
+          value: storageAccountName
+        }
+        {
           name: 'AZURE_STORAGE_BLOB_ENDPOINT'
           value: storageAccountBlobEndpoint
         }
         {
-          name: 'AUDIT_API_KEY'
-          value: auditApiKey
+          name: 'AUDIT_QUEUE_NAME'
+          value: 'audit-log'
+        }
+        {
+          name: 'ANALYTICS_CONTAINER'
+          value: 'analytics-log'
+        }
+        {
+          name: 'POISON_CONTAINER'
+          value: 'poison-log'
+        }
+        {
+          name: 'ARCHIVE_CONTAINER'
+          value: 'archive-log'
         }
       ]
     }

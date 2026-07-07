@@ -12,7 +12,8 @@ param logAnalyticsWorkspaceId string
 param appInsightsInstrumentationKey string
 param appInsightsId string
 param managedIdentityClientId string
-param storageQueueUrl string
+param auditLogUrl string
+param auditApiKey string
 
 // API Management (Consumption SKU)
 resource apim 'Microsoft.ApiManagement/service@2023-05-01-preview' = {
@@ -73,12 +74,22 @@ resource nvMiClientId 'Microsoft.ApiManagement/service/namedValues@2023-05-01-pr
   }
 }
 
-resource nvStorageQueueUrl 'Microsoft.ApiManagement/service/namedValues@2023-05-01-preview' = {
+resource nvAuditLogUrl 'Microsoft.ApiManagement/service/namedValues@2023-05-01-preview' = {
   parent: apim
-  name: 'audit-queue-url'
+  name: 'audit-log-url'
   properties: {
-    displayName: 'audit-queue-url'
-    value: storageQueueUrl
+    displayName: 'audit-log-url'
+    value: auditLogUrl
+  }
+}
+
+resource nvAuditApiKey 'Microsoft.ApiManagement/service/namedValues@2023-05-01-preview' = {
+  parent: apim
+  name: 'audit-api-key'
+  properties: {
+    displayName: 'audit-api-key'
+    value: auditApiKey
+    secret: true
   }
 }
 
@@ -145,7 +156,8 @@ resource apiPolicy 'Microsoft.ApiManagement/service/apis/policies@2023-05-01-pre
     nvAllowedCidrs
     nvTenantId
     nvMiClientId
-    nvStorageQueueUrl
+    nvAuditLogUrl
+    nvAuditApiKey
   ]
 }
 

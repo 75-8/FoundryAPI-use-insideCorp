@@ -1,48 +1,33 @@
-# ADR-009: Parquet スキーマに upn・tenantId が未定義
+# ADR-009: Parquet スキーマに upn・tenantId は未反映
 
 ## ステータス
 
-Accepted (不整合を認識)
+Implemented (partial)
 
 ## 日付
 
-2026-07-05
+2026-07-08
 
 ## コンテキスト
 
-ADR-002 で記録した通り、HTTP Trigger は `upn` と `tenantId` を含む JSON を Blob Storage に保存する。
-
-しかし、Timer Trigger の Parquet スキーマおよび `AuditLogRecord` インターフェースにはこれらのフィールドが含まれていない。
+HTTP Trigger では `upn` と `tenantId` を JSON に保存しているが、Batch 側の Parquet スキーマにはまだ反映されていない。
 
 ## 決定
 
-現時点では Parquet スキーマに `upn` / `tenantId` を **含めない** 実装となっている。
+現時点では Parquet 変換時に `upn` / `tenantId` を出力しない。Raw JSON と Archive のスキーマに差がある。
 
-### 実装箇所
+## 実装状況
 
-- [timerTrigger.ts](log-batch/src/functions/timerTrigger.ts#L15-L28): `AuditLogRecord` に `upn`, `tenantId` なし
-- [timerTrigger.ts](log-batch/src/functions/timerTrigger.ts#L127-L140): Parquet スキーマに `upn`, `tenantId` なし
+- [log-batch/src/functions/timerTrigger.ts](../../log-batch/src/functions/timerTrigger.ts): Parquet スキーマに `upn` / `tenantId` を含めていない
 
-### データフロー上の影響
+## 実装との差分
 
-```
-JSON (raw-log) → upn, tenantId あり
-    ↓ Timer Trigger
-Parquet (archive-log) → upn, tenantId なし ← データ欠落
-```
+| 項目 | 実装 |
+|------|------|
+| Raw JSON | `upn` / `tenantId` を保持 |
+| Parquet | `upn` / `tenantId` を未出力 |
 
-## 内部不整合
+## 影響
 
-| コンポーネント | upn | tenantId |
-|---------------|-----|----------|
-| APIM trace | ✅ | ✅ |
-| HTTP Trigger (JSON保存) | ✅ | ✅ |
-| Timer Trigger (Parquet) | ❌ | ❌ |
-
-## 推奨アクション
-
-Timer Trigger の `AuditLogRecord` と Parquet スキーマに `upn` (UTF8) と `tenantId` (UTF8) を追加し、アーカイブデータの完全性を確保すべき。
-
-## Spec 更新の必要性
-
-ADR-002 で `upn` / `tenantId` を Spec に追加する場合、Parquet スキーマの仕様も同時に定義すべき。
+- Archive では利用者情報が欠落する。
+- 仕様上は `upn` / `tenantId` を残したい場合、Parquet スキーマの拡張が必要。

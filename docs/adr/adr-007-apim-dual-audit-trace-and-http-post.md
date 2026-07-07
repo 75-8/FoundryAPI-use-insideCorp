@@ -1,61 +1,39 @@
-# ADR-007: APIM ポリシーでの二重監査ログ出力
+# ADR-007: APIM は trace と HTTP POST の両方で監査ログを送る
 
 ## ステータス
 
-Accepted
+Implemented
 
 ## 日付
 
-2026-07-05
+2026-07-08
 
 ## コンテキスト
 
-仕様書 (spec.md §4.1) では、APIM の責務は以下の通り:
-
-1. APIM Policy で監査情報生成
-2. Azure Functions HTTP Trigger へ POST
-
-つまり、APIM は監査データを **HTTP Trigger に POST する** のみと定義されている。
+APIM のポリシーでは、監査データを Functions へ送るだけでなく、Application Insights へも直接出力する構成になっている。これにより、HTTP Trigger の障害時でも最低限の証跡を残せる。
 
 ## 決定
 
-実装では、APIM outbound ポリシーで **2 つの経路** で監査データを出力する:
+APIM outbound ポリシーでは以下の 2 つを並行して行う。
 
-1. **`<trace>` ディレクティブ** → Application Insights に直接記録
-2. **`<send-one-way-request>`** → HTTP Trigger へ POST
+1. `<trace>` で Application Insights に記録する。
+2. `<send-one-way-request>` で HTTP Trigger に POST する。
 
-### 実装箇所
+## 実装状況
 
-- [apim-policy.xml](infra/policies/apim-policy.xml#L231-L249): `<trace source="ai-agent-audit">` で Application Insights に直接出力
-- [apim-policy.xml](infra/policies/apim-policy.xml#L254-L279): `<send-one-way-request>` で HTTP Trigger に POST
-- [apim-policy.xml](infra/policies/apim-policy.xml#L289-L345): on-error セクションでもエラーログを trace + HTTP POST
+- [infra/policies/apim-policy.xml](../../infra/policies/apim-policy.xml): `<trace>` で Application Insights へ出力
+- [infra/policies/apim-policy.xml](../../infra/policies/apim-policy.xml): `<send-one-way-request>` で Functions へ POST
+- [infra/policies/apim-policy.xml](../../infra/policies/apim-policy.xml): エラー時も trace + POST を行う
 
-### trace に含まれる追加フィールド
+## 実装との差分
 
-APIM trace 出力には HTTP POST にはないフィールドが含まれる:
+| 項目 | 実装 |
+|------|------|
+| APIM → App Insights | 直接記録 |
+| APIM → HTTP Trigger | POST で送信 |
+| on-error | trace + POST で出力 |
 
-| フィールド | trace | HTTP POST |
-|-----------|-------|-----------|
-| event | ✅ (`"llm-api-call"`) | ❌ |
-| upn | ✅ | ❌ (HTTP Trigger 側で受け取らない) |
-| tenantId | ✅ | ❌ (HTTP Trigger 側で受け取らない) |
-| httpStatus | ✅ | statusCode として ✅ |
-| durationMs | ✅ | responseTimeMs として ✅ |
+## 影響
 
-## Spec との差分
-
-| 項目 | Spec | 実装 |
-|------|------|------|
-| APIM → App Insights 直接記録 | なし | `<trace>` で直接記録 |
-| APIM → HTTP Trigger POST | あり | ✅ `<send-one-way-request>` |
-| on-error 時のログ出力 | なし | trace + HTTP POST |
-
-## 理由
-
-- HTTP Trigger が障害の場合でも、APIM trace 経由で最低限の監査証跡を確保
-- 可観測性の向上（APIM 側でのリアルタイム監視が可能）
-- ベストエフォートの監査ログ方針 (§11) に合致
-
-## Spec 更新の必要性
-
-§4.1 に「APIM は Application Insights にも trace を出力し、二重記録による耐障害性を確保する」旨を追記すべき。
+- 監査トレースの可観測性が高い。
+- HTTP Trigger が落ちても APIM 側のログは残る。

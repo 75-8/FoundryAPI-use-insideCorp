@@ -1,49 +1,35 @@
-# ADR-008: Timer Trigger が全日付の Raw ログを処理
+# ADR-008: Timer Trigger は未処理の全日付をまとめて処理する
 
 ## ステータス
 
-Accepted
+Implemented
 
 ## 日付
 
-2026-07-05
+2026-07-08
 
 ## コンテキスト
 
-仕様書 (spec.md §4.3) では、日次バッチの処理フローを以下のように記述している:
-
-> 毎日 00:00 (JST) Timer Trigger が起動 → Blob 内 JSON を取得 → Parquet へ変換 → Archive Container へ保存 → JSON 削除
-
-「Blob 内 JSON を取得」の範囲について明確な限定はないが、日次バッチという文脈から **前日分のみ** を処理する想定が自然に読み取れる。
+バッチ処理は毎日 00:00 に実行されるが、実装では `raw-log` 配下の全 `.json` を列挙して日付ごとにまとめて処理する。
 
 ## 決定
 
-Timer Trigger は `raw-log` コンテナ内の **すべての `.json` ファイル** をリストし、日付ごとにグルーピングして処理する。
+Timer Trigger は前日だけに限定せず、未処理の全日付を対象にして Parquet 変換・アーカイブ・削除を行う。
 
-### 実装箇所
+## 実装状況
 
-- [timerTrigger.ts](log-batch/src/functions/timerTrigger.ts#L80-L84): `rawContainerClient.listBlobsFlat()` で全 blob を列挙
-- [timerTrigger.ts](log-batch/src/functions/timerTrigger.ts#L95-L124): パスから日付を抽出し `dateKey` でグルーピング
-- [timerTrigger.ts](log-batch/src/functions/timerTrigger.ts#L143-L222): 日付グループごとに Parquet 変換・アーカイブ・削除
+- [log-batch/src/functions/timerTrigger.ts](../../log-batch/src/functions/timerTrigger.ts): `listBlobsFlat()` で全 blob を列挙
+- [log-batch/src/functions/timerTrigger.ts](../../log-batch/src/functions/timerTrigger.ts): パスから日付を抽出してグルーピング
 
-## Spec との差分
+## 実装との差分
 
-| 項目 | Spec | 実装 |
-|------|------|------|
-| 処理対象 | 前日分 (暗黙的) | raw-log 内の全日付 |
-| 日付グルーピング | 記載なし | パスから YYYY/MM/DD を抽出してグループ化 |
+| 項目 | 実装 |
+|------|------|
+| 処理対象 | `raw-log` 内の全日付 |
+| 障害時の挙動 | 未処理データを再処理可能 |
+| 削除タイミング | アーカイブ成功後に Raw を削除 |
 
-## 理由
+## 影響
 
-- 障害リカバリ: 前回のバッチが失敗した場合、未処理の過去データも自動的に処理される
-- シンプルな実装: 日付フィルタリングのロジックが不要
-- `raw-log` の 7 日 Lifecycle Policy により、古いデータは自動削除されるため無限蓄積の懸念なし
-
-## トレードオフ
-
-- 大量のファイルが蓄積した場合、`listBlobsFlat()` の実行時間が長くなる可能性
-- 同日に複数回バッチが実行された場合、既にアーカイブ済みの Parquet が上書きされる
-
-## Spec 更新の必要性
-
-§4.3 に「未処理の全日付を対象とし、障害リカバリを自動化する」旨を明記すべき。
+- 障害復旧性が高い。
+- 同じ日付が複数回処理されると、既存 Parquet が上書きされる可能性がある。

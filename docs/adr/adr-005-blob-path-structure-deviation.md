@@ -1,57 +1,36 @@
-# ADR-005: Blob パス構造の仕様差分
+# ADR-005: Blob パス構造は実装ベースで固定
 
 ## ステータス
 
-Accepted
+Implemented
 
 ## 日付
 
-2026-07-05
+2026-07-08
 
 ## コンテキスト
 
-仕様書 (spec.md §7) では、Raw JSON の Blob パスを以下のように定義している:
-
-```
-raw-log/          ← コンテナ名
-    2026/
-        07/
-            01/
-                xxxx.json
-```
-
-ファイル名は `xxxx.json` と記載されており、具体的な命名規則は未指定。
+実装コードでは Raw JSON は `raw-log/YYYY/MM/DD/{requestId}.json` という形式で保存される。Archive は Hive パーティション形式の `year=.../month=.../day=.../audit.parquet` で保存される。
 
 ## 決定
 
-### Raw パス
+- Raw ログの Blob 名は `raw-log/YYYY/MM/DD/{requestId}.json` とする。
+- Archive ログは `year=YYYY/month=MM/day=DD/audit.parquet` とする。
 
-コンテナ `raw-log` に対して、Blob 名を `raw-log/YYYY/MM/DD/{requestId}.json` としている。
+## 実装状況
 
-- [httpTrigger.ts](log-http/src/functions/httpTrigger.ts#L147-L149): `const blobName = 'raw-log/${year}/${month}/${day}/${logRecord.requestId}.json'`
-- コンテナ名 `raw-log` の下に `raw-log/` プレフィックスが付くため、実質的なパスは `raw-log` (container) → `raw-log/2026/07/01/xxx.json` (blob) となる
+- [log-http/src/functions/httpTrigger.ts](../../log-http/src/functions/httpTrigger.ts): Raw Blob 名を組み立てる
+- [log-batch/src/functions/timerTrigger.ts](../../log-batch/src/functions/timerTrigger.ts): Archive パスを作る
 
-### Archive パス
+## 実装との差分
 
-仕様書通りの Hive パーティション形式を採用:
-
-- [timerTrigger.ts](log-batch/src/functions/timerTrigger.ts#L191): `year=${year}/month=${month}/day=${day}/audit.parquet`
-
-## Spec との差分
-
-| 項目 | Spec | 実装 |
-|------|------|------|
-| Raw blob 名 | `raw-log/YYYY/MM/DD/xxxx.json` | `raw-log/YYYY/MM/DD/{requestId}.json` |
-| Raw blob プレフィックス重複 | なし (仕様上はコンテナ直下) | コンテナ `raw-log` + パス `raw-log/...` で重複 |
-| ファイル名 | `xxxx.json` (未指定) | `{requestId}.json` |
-| Archive パス | `year=YYYY/month=MM/day=DD/audit.parquet` | ✅ 仕様通り |
+| 項目 | 実装 |
+|------|------|
+| Raw パス | `raw-log/YYYY/MM/DD/{requestId}.json` |
+| Archive パス | `year=YYYY/month=MM/day=DD/audit.parquet` |
+| ファイル名 | `{requestId}.json` |
 
 ## 影響
 
-- `raw-log/raw-log/2026/07/01/` という二重プレフィックス構造になる
-- Lifecycle Management のフィルタが `raw-log/` プレフィックスで設定されているため、動作上の問題はない
-- Timer Trigger 側の日付グルーピングで `parts[0] === 'raw-log'` をチェックしているため整合性は保たれている
-
-## Spec 更新の必要性
-
-コンテナ内のパス構造を明確にし、ファイル名を `{requestId}.json` と明記すべき。
+- Raw 側はコンテナ名とパスの接頭辞が重なっているが、実装上は問題なく動作する。
+- Batch 側はパスから日付を抽出してグルーピングしている。

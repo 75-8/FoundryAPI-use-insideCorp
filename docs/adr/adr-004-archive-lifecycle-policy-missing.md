@@ -1,64 +1,33 @@
-# ADR-004: Archive コンテナの 2 年間保持ポリシーが未実装
+# ADR-004: Archive コンテナの保持ポリシーは未実装
 
 ## ステータス
 
-Accepted (未実装を認識)
+Implemented (partial)
 
 ## 日付
 
-2026-07-05
+2026-07-08
 
 ## コンテキスト
 
-仕様書 (spec.md §7) では、`archive-log` コンテナの保持期間を **2 年間** と定義している。
-
-現在の実装では `raw-log` コンテナに対して 7 日間の Lifecycle Management ポリシーが設定されているが、`archive-log` コンテナには保持期間制御がない。
+実装コードでは `raw-log` に対してのみ 7 日の Lifecycle Management ルールが設定されている。`archive-log` には保持期間ルールが追加されていない。
 
 ## 決定
 
-`archive-log` コンテナには Lifecycle Management ポリシーを **未設定** とする（現時点）。
+`archive-log` の自動削除ルールは現時点では実装しない。`raw-log` だけを 7 日で削除する。
 
-### 実装箇所
+## 実装状況
 
-- [storage.bicep](infra/module/storage.bicep#L42-L73): `raw-log/` プレフィックスに対する 7 日削除ルールのみ定義
+- [infra/module/storage.bicep](../../infra/module/storage.bicep): `raw-log/` に対する 7 日削除ルールを定義
 
-## Spec との差分
+## 実装との差分
 
-| 項目 | Spec | 実装 |
-|------|------|------|
-| `raw-log` 保持期間 | 7 日 (Lifecycle Management) | ✅ 7 日削除ルール実装済み |
-| `archive-log` 保持期間 | 2 年間 | ❌ ポリシー未設定（無期限保持） |
+| 項目 | 実装 |
+|------|------|
+| `raw-log` 保持期間 | 7 日で削除 |
+| `archive-log` 保持期間 | 未設定 |
 
-## 理由
+## 影響
 
-- 監査証跡の誤削除リスクを回避するため、手動管理を優先した可能性
-- 2 年間の自動削除は、法的要件の確認後に設定する方が安全
-
-## 推奨アクション
-
-以下の Lifecycle Management ルールを `storage.bicep` に追加することを推奨:
-
-```bicep
-{
-  enabled: true
-  name: 'delete-archive-logs-after-730-days'
-  type: 'Lifecycle'
-  definition: {
-    actions: {
-      baseBlob: {
-        delete: {
-          daysAfterCreationGreaterThan: 730
-        }
-      }
-    }
-    filters: {
-      blobTypes: ['blockBlob']
-      prefixMatch: ['archive-log/']
-    }
-  }
-}
-```
-
-## Spec 更新の必要性
-
-実装と合わせるか、上記ルールを実装した上で Spec 通りとするか判断が必要。
+- 監査証跡の誤削除リスクを避けるため、`archive-log` は現状無期限保持になる。
+- 2 年間の自動削除は今後の追加実装対象である。

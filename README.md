@@ -86,15 +86,17 @@ log-batch/
 
 ## 8. Deployment
 
-```bash
-az login
-az account set --subscription <subscription-id>
-az bicep build --file infra/main.bicep
-az deployment sub create \
-  --location japaneast \
-  --template-file infra/main.bicep \
-  --parameters infra/parameters/dev.bicepparam
-```
+Foundry["Azure AI Foundry<br/>Codex"]
+
+FuncHttp["Azure Functions<br/>HTTP Trigger"]
+
+BlobHot["Blob Storage<br/>Raw JSON"]
+
+FuncTimer["Azure Functions<br/>Timer Trigger"]
+
+BlobArchive["Blob Storage<br/>Parquet Archive"]
+
+LogAnalytics["Log Analytics"]
 
 ## 9. Documentation
 

@@ -1,9 +1,11 @@
 targetScope = 'resourceGroup'
 
 param foundryAccountName string
-param principalId string
+param principalId string // APIM Managed Identity
+
 param storageAccountName string
-param funcAuditPrincipalId string
+param funcHttpPrincipalId string
+param funcBatchPrincipalId string
 
 resource foundryAccount 'Microsoft.CognitiveServices/accounts@2023-10-01-preview' existing = {
   name: foundryAccountName
@@ -13,46 +15,66 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' existing 
   name: storageAccountName
 }
 
-var cognitiveServicesOpenAIUserId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
-var storageBlobDataContributorId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
-var storageQueueDataContributorId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
+// Cognitive Services OpenAI User role (5e0bd9bd-7b93-4f28-af87-19fc36ad61bd)
+var roleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
 
-resource foundryUserAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource roleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: foundryAccount
-  name: guid(foundryAccount.id, principalId, cognitiveServicesOpenAIUserId)
+  name: guid(foundryAccount.id, principalId, roleDefinitionId)
   properties: {
-    roleDefinitionId: cognitiveServicesOpenAIUserId
+    roleDefinitionId: roleDefinitionId
     principalId: principalId
     principalType: 'ServicePrincipal'
   }
 }
 
-resource apimQueueAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+// Role Definitions for Storage Account
+var storageBlobDataOwnerId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc21-b1e4-47ef-941f-11b17200725a')
+var storageQueueDataContributorId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
+var storageTableDataContributorId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1e-b9d0-4c7e-9187-d00e2c21290a')
+
+// Helper array for roles to assign to Function Apps
+var functionsIdentities = [
+  {
+    name: 'funcHttp'
+    principalId: funcHttpPrincipalId
+  }
+  {
+    name: 'funcBatch'
+    principalId: funcBatchPrincipalId
+  }
+]
+
+// Assign Storage Blob Data Owner to both functions
+resource blobOwnerAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for identity in functionsIdentities: {
   scope: storageAccount
-  name: guid(storageAccount.id, principalId, storageQueueDataContributorId, 'apim')
+  name: guid(storageAccount.id, identity.principalId, storageBlobDataOwnerId)
+  properties: {
+    roleDefinitionId: storageBlobDataOwnerId
+    principalId: identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}]
+
+// Assign Storage Queue Data Contributor to both functions
+resource queueContributorAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for identity in functionsIdentities: {
+  scope: storageAccount
+  name: guid(storageAccount.id, identity.principalId, storageQueueDataContributorId)
   properties: {
     roleDefinitionId: storageQueueDataContributorId
-    principalId: principalId
+    principalId: identity.principalId
     principalType: 'ServicePrincipal'
   }
-}
+}]
 
-resource functionBlobAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+// Assign Storage Table Data Contributor to both functions
+resource tableContributorAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for identity in functionsIdentities: {
   scope: storageAccount
-  name: guid(storageAccount.id, funcAuditPrincipalId, storageBlobDataContributorId)
+  name: guid(storageAccount.id, identity.principalId, storageTableDataContributorId)
   properties: {
-    roleDefinitionId: storageBlobDataContributorId
-    principalId: funcAuditPrincipalId
+    roleDefinitionId: storageTableDataContributorId
+    principalId: identity.principalId
     principalType: 'ServicePrincipal'
   }
-}
+}]
 
-resource functionQueueAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: storageAccount
-  name: guid(storageAccount.id, funcAuditPrincipalId, storageQueueDataContributorId)
-  properties: {
-    roleDefinitionId: storageQueueDataContributorId
-    principalId: funcAuditPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}

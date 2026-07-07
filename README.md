@@ -2,8 +2,6 @@
 
 ## AI Coding Agent Platform on Azure AI Foundry (Codex)
 
-Version: 1.0
-
 ## 1. Objective
 
 Azure AI Foundry 上の Codex を利用する社内向け AI コーディングエージェント基盤を構築します。Azure API Management (APIM) を唯一の公開エンドポイントとし、認証・認可・監査ログ・コスト分析・アクセス制御を提供します。Infrastructure as Code は Bicep を使用し、Azure リソースはコードで管理します。
@@ -85,15 +83,15 @@ log-batch/
 
 ## 8. Deployment
 
-Foundry["Azure AI Foundry<br/>Codex"]
+Foundry["Azure AI Foundry Codex"]
 
-FuncHttp["Azure Functions<br/>HTTP Trigger"]
+FuncHttp["Azure Functions HTTP Trigger"]
 
-BlobHot["Blob Storage<br/>Raw JSON"]
+BlobHot["Blob Storage Raw JSON"]
 
-FuncTimer["Azure Functions<br/>Timer Trigger"]
+FuncTimer["Azure Functions Timer Trigger"]
 
-BlobArchive["Blob Storage<br/>Parquet Archive"]
+BlobArchive["Blob Storage Parquet Archive"]
 
 LogAnalytics["Log Analytics"]
 

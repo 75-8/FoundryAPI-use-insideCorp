@@ -124,7 +124,6 @@ flowchart LR
   Analytics --> FuncTimer[Azure Functions auditBatch Timer]
   FuncTimer --> Archive[Blob archive-log Parquet]
   Analytics --> LAW[Log Analytics]
-  FuncQueue --> Appi[Application Insights]
 ```
 
 ログ処理
@@ -156,7 +155,6 @@ Analytics Blob -> Log Analytics
 - Blob Storage
 - Azure Functions
 - Managed Identity
-- Application Insights
 - Log Analytics Workspace
 
 ---
@@ -395,7 +393,6 @@ Analytics BlobをLog Analyticsへ接続する。
 - 呼び出し回数
 - latency
 
-Application InsightsはAzure Functionsの監視用途として利用する。
 
 ---
 

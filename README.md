@@ -60,7 +60,6 @@ flowchart LR
   Analytics --> FuncTimer[Azure Functions auditBatch Timer]
   FuncTimer --> Archive[Blob archive-log Parquet]
   Analytics --> LAW[Log Analytics]
-  FuncQueue --> Appi[Application Insights]
 ```
 
 ## 6. Implementation Notes

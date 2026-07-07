@@ -1,19 +1,60 @@
-# Azure AI Foundry Codex 社内 AI コーディングエージェント基盤
+# Azure Infrastructure Build Specification
 
-## 目的
+## AI Coding Agent Platform on Azure AI Foundry (Codex)
 
-Azure API Management (APIM) を唯一の公開エンドポイントとして、Azure AI Foundry Account Endpoint 上の Codex 利用を認証・認可・監査・コスト分析できるようにする社内向け基盤です。IaC は Bicep のみを使用し、API Key や Project Endpoint / Azure OpenAI Endpoint には依存しません。
+Version: 1.0
 
-## システム構成
+## 1. Objective
+
+Azure AI Foundry 上の Codex を利用する社内向け AI コーディングエージェント基盤を構築します。Azure API Management (APIM) を唯一の公開エンドポイントとし、認証・認可・監査ログ・コスト分析・アクセス制御を提供します。Infrastructure as Code は Bicep を使用し、Azure リソースはコードで管理します。
+
+## 2. Scope
+
+対象:
+- Azure Infrastructure
+- Bicep
+- Azure API Management
+- APIM Policy
+- Azure Functions
+- Azure Storage
+- Azure AI Foundry
+- Monitoring
+- Logging
+- RBAC
+- Diagnostic Settings
+
+対象外:
+- クライアントアプリケーション
+- CI/CD
+- アプリケーションロジック
+
+## 3. Design Principles
+
+優先順位:
+1. Security
+2. Cost Optimization
+3. Maintainability
+4. Observability
+5. Availability
+
+少人数利用を前提とし、低コストかつ運用負荷の低い構成を採用します。
+
+## 4. Constraints
+
+- Subscription Owner 権限を前提とし、Tenant / Global 管理者権限は使用しません。
+- IaC は Bicep / AVM のみとし、Terraform / ARM / Portal 前提の構築は行いません。
+- Codex は Azure AI Foundry Account Endpoint を利用し、Project Endpoint / Azure OpenAI Endpoint / API Key 認証は使用しません。
+
+## 5. Architecture Summary
 
 ```mermaid
 flowchart LR
-  Dev[Developer / Azure CLI] --> Entra[Microsoft Entra ID]
-  Entra --> Dev
-  Dev -->|Bearer token| APIM[API Management Consumption]
+  Developer[Developer / Azure CLI] --> Entra[Microsoft Entra ID]
+  Entra --> Developer
+  Developer -->|Bearer token| APIM[Azure API Management]
   APIM -->|JWT validation / rate limit / audit enqueue| Queue[Storage Queue audit-log]
   APIM -->|Managed Identity| Foundry[Azure AI Foundry Account Endpoint]
-  Queue --> FuncQueue[Azure Functions Consumption auditQueue]
+  Queue --> FuncQueue[Azure Functions auditQueue]
   FuncQueue --> Analytics[Blob analytics-log JSON]
   FuncQueue --> Poison[Blob poison-log JSON]
   Analytics --> FuncTimer[Azure Functions auditBatch Timer]
@@ -22,24 +63,14 @@ flowchart LR
   FuncQueue --> Appi[Application Insights]
 ```
 
-## 主要なセキュリティ方針
+## 6. Implementation Notes
 
-- クライアントは `az account get-access-token` で取得した Entra ID Bearer Token を APIM に送信します。
-- APIM は JWT 検証、OID 許可、IP 制限、レート制限、Correlation ID 生成を実施します。
-- Foundry 呼び出しは APIM の User Assigned Managed Identity で行い、クライアント Token は転送しません。
-- Storage は Shared Key / Public Blob Access を無効化し、Queue と Blob へのアクセスは RBAC + Managed Identity に限定します。
-- 監査ログは本文・プロンプト・Completion・Tool Arguments・ソースコードを保存しません。
+- APIM では JWT 検証、Claim 抽出、OID/tenant ID 取得、Correlation ID 生成、Storage Queue への監査ログ送信、Managed Identity による Foundry 呼び出しを実施します。
+- Azure Functions は TypeScript / Node.js LTS で実装し、Queue Trigger / Timer Trigger / Poison Handler を提供します。
+- Storage は Shared Key / Public Blob Access / SAS を無効化し、RBAC と Managed Identity でのみアクセス可能にします。
+- 監査ログは本文・プロンプト・Completion・Tool Arguments・Source Code を保存しません。
 
-## ログフロー
-
-1. APIM がレスポンスの usage メタデータと JWT Claim / HTTP メタデータだけを抽出します。
-2. APIM が Storage Queue `audit-log` に非同期で投入します。メッセージ TTL は 1 時間です。
-3. Queue Trigger Function `auditQueue` が `analytics-log` に JSON を保存します。
-4. 失敗時は `poison-log` にエラー情報と元メッセージを保存します。
-5. Timer Trigger Function `auditBatch` が Analytics JSON を Parquet に変換し、`archive-log` に保存します。
-6. Lifecycle Policy により Analytics は 90 日、Poison は 14 日、Archive は 730 日で削除されます。
-
-## リポジトリ構成
+## 7. Repository Layout
 
 ```text
 infra/
@@ -49,12 +80,11 @@ infra/
   policies/apim-policy.xml
   apim/
   functions/
+log-http/
 log-batch/
-  src/functions/auditQueue.ts
-  src/functions/timerTrigger.ts
 ```
 
-## デプロイ手順
+## 8. Deployment
 
 ```bash
 az login
@@ -66,17 +96,7 @@ az deployment sub create \
   --parameters infra/parameters/dev.bicepparam
 ```
 
-> Function App への TypeScript パッケージ配置は CI/CD 対象外のため、`log-batch` をビルドして ZIP デプロイしてください。
+## 9. Documentation
 
-## 運用クエリ例
-
-```kusto
-StorageBlobLogs
-| where Uri has "analytics-log"
-| summarize count() by bin(TimeGenerated, 1h)
-```
-
-## ドキュメント
-
-- [仕様書](./docs/spec/spec.md)
-- [構成図](./docs/spec/diagram.md)
+- [Specification](./docs/spec/spec.md)
+- [Architecture Diagram](./docs/spec/diagram.md)

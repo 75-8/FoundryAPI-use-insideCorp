@@ -1,97 +1,55 @@
 # システム構成図
 
-## 監査ログ基盤 構成図
+## Azure AI Foundry Codex 基盤
 
 ```mermaid
 flowchart LR
-
-Client["Client"]
-
-APIM["Azure API Management"]
-
-Foundry["Azure AI Foundry<br/>Codex"]
-
-FuncHttp["Azure Functions<br/>HTTP Trigger"]
-
-BlobHot["Blob Storage<br/>Raw JSON"]
-
-FuncTimer["Azure Functions<br/>Timer Trigger"]
-
-BlobArchive["Blob Storage<br/>Parquet Archive"]
-
-LogAnalytics["Log Analytics"]
-
-Workbook["Azure Workbook"]
-
-Client --> APIM
-
-APIM --> Foundry
-
-APIM --> FuncHttp
-
-FuncHttp --> BlobHot
-
-FuncHttp --> LogAnalytics
-
-FuncTimer --> BlobHot
-
-BlobHot --> FuncTimer
-
-FuncTimer --> BlobArchive
+  Dev[Developer / Azure CLI] --> Entra[Microsoft Entra ID]
+  Entra --> Dev
+  Dev -->|Bearer token| APIM[Azure API Management]
+  APIM -->|JWT validation / rate limit / audit enqueue| Queue[Storage Queue audit-log]
+  APIM -->|Managed Identity| Foundry[Azure AI Foundry Account Endpoint]
+  Queue --> FuncQueue[Azure Functions auditQueue]
+  FuncQueue --> Analytics[Blob analytics-log JSON]
+  FuncQueue --> Poison[Blob poison-log JSON]
+  Analytics --> FuncTimer[Azure Functions auditBatch Timer]
+  FuncTimer --> Archive[Blob archive-log Parquet]
+  Analytics --> LAW[Log Analytics]
+  FuncQueue --> Appi[Application Insights]
 ```
 
-## データフロー シーケンス
+## ログ処理シーケンス
 
 ```mermaid
 sequenceDiagram
+  participant Dev as Developer
+  participant Entra as Microsoft Entra ID
+  participant APIM as Azure API Management
+  participant Foundry as Azure AI Foundry
+  participant Queue as Storage Queue
+  participant Func as Azure Functions
+  participant Blob as Blob Storage
+  participant LAW as Log Analytics
 
-    participant Client as "Client"
-    participant APIM as "Azure API Management"
-    participant Entra as "Microsoft Entra ID"
-    participant Foundry as "Azure AI Foundry"
-    participant FuncHttp as "Azure Functions (HTTP)"
-    participant Blob as "Blob Storage"
-    participant LA as "Log Analytics"
-
-    Client->>APIM: HTTPS Request + Bearer Token
-
-    APIM->>Entra: Validate JWT
-
-    Entra-->>APIM: Validation Result
-
-    APIM->>Foundry: Request (Managed Identity)
-
-    Foundry-->>APIM: LLM Response
-
-    APIM-->>Client: HTTPS Response
-
-    APIM->>FuncHttp: POST 監査情報
-
-    FuncHttp->>Blob: JSON保存 (raw-log)
-
-    FuncHttp->>LA: ログ送信
+  Dev->>Entra: Sign-in / get access token
+  Entra-->>Dev: Bearer token
+  Dev->>APIM: HTTPS request with Bearer token
+  APIM->>Entra: Validate JWT
+  Entra-->>APIM: Validation result
+  APIM->>Foundry: Request via Managed Identity
+  Foundry-->>APIM: Response
+  APIM->>Queue: Enqueue audit metadata
+  Queue->>Func: Queue trigger
+  Func->>Blob: Persist analytics JSON / poison JSON
+  Func->>LAW: Send telemetry
 ```
 
-## 日次バッチ フロー
+## 日次バッチフロー
 
 ```mermaid
 flowchart TD
-
-    Timer["Timer Trigger<br/>毎日 00:00 JST"]
-
-    GetJSON["Blob内JSON取得"]
-
-    Convert["Parquetへ変換"]
-
-    Save["Archive Containerへ保存"]
-
-    Delete["JSON削除"]
-
-    Timer --> GetJSON
-
-    GetJSON --> Convert
-
-    Convert --> Save
-
-    Save --> Delete
+  Timer[Timer Trigger] --> Read[Read analytics JSON blobs]
+  Read --> Convert[Convert to Parquet]
+  Convert --> Archive[Upload to archive-log]
+  Archive --> Cleanup[Delete processed raw JSON]
 ```

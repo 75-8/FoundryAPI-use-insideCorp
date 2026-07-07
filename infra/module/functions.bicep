@@ -2,10 +2,8 @@ targetScope = 'resourceGroup'
 
 param location string
 param basename string
-param appInsightsConnectionString string
 param storageAccountName string
 param storageAccountBlobEndpoint string
-param auditApiKey string
 
 // App Service Plan (Consumption Linux)
 resource asp 'Microsoft.Web/serverfarms@2022-09-01' = {
@@ -42,10 +40,6 @@ resource funcHttp 'Microsoft.Web/sites@2022-09-01' = {
           value: '~4'
         }
         {
-          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-          value: appInsightsConnectionString
-        }
-        {
           name: 'AzureWebJobsStorage__accountName'
           value: storageAccountName
         }
@@ -55,7 +49,7 @@ resource funcHttp 'Microsoft.Web/sites@2022-09-01' = {
         }
         {
           name: 'AzureWebJobsStorage__queueServiceUri'
-          value: storageAccountQueueEndpoint
+          value: 'https://${storageAccountName}.queue.${environment().suffixes.storage}'
         }
         {
           name: 'AUDIT_STORAGE_ACCOUNT_NAME'
@@ -106,10 +100,6 @@ resource funcBatch 'Microsoft.Web/sites@2022-09-01' = {
         {
           name: 'FUNCTIONS_EXTENSION_VERSION'
           value: '~4'
-        }
-        {
-          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-          value: appInsightsConnectionString
         }
         {
           name: 'AzureWebJobsStorage__accountName'

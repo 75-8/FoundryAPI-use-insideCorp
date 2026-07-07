@@ -64,10 +64,8 @@ module functions 'module/functions.bicep' = {
   params: {
     location: location
     basename: basename
-    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     storageAccountName: storage.outputs.storageAccountName
     storageAccountBlobEndpoint: storage.outputs.blobEndpoint
-    auditApiKey: auditApiKey
   }
 }
 

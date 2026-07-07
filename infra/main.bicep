@@ -17,8 +17,7 @@ var appInsightsName = 'appi-${basename}'
 var identityName = '${apimName}-mi'
 var workbookName = 'wb-foundry-usage-${env}'
 var storageAccountName = take('st${basename}', 24)
-var auditApiKey = uniqueString(subscription().subscriptionId, 'audit-api-key')
-var auditLogUrl = 'https://func-http-${basename}.azurewebsites.net/api/audit'
+var tags = { environment: env, workload: 'foundry-codex-agent', managedBy: 'bicep' }
 
 // Resource Group
 resource rg 'Microsoft.Resources/resourceGroups@2023-07-01' = {
@@ -54,6 +53,7 @@ module storage 'module/storage.bicep' = {
   params: {
     location: location
     storageAccountName: storageAccountName
+    tags: tags
   }
 }
 
@@ -67,7 +67,8 @@ module functions 'module/functions.bicep' = {
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     storageAccountName: storage.outputs.storageAccountName
     storageAccountBlobEndpoint: storage.outputs.blobEndpoint
-    auditApiKey: auditApiKey
+    storageAccountQueueEndpoint: storage.outputs.queueEndpoint
+    tags: tags
   }
 }
 
@@ -91,8 +92,7 @@ module rbac 'module/rbac.bicep' = {
     foundryAccountName: foundryName
     principalId: identity.outputs.principalId
     storageAccountName: storage.outputs.storageAccountName
-    funcHttpPrincipalId: functions.outputs.funcHttpPrincipalId
-    funcBatchPrincipalId: functions.outputs.funcBatchPrincipalId
+    funcAuditPrincipalId: functions.outputs.funcAuditPrincipalId
   }
 }
 
@@ -111,8 +111,7 @@ module apim 'module/apim.bicep' = {
     appInsightsInstrumentationKey: monitoring.outputs.appInsightsInstrumentationKey
     appInsightsId: '${rg.id}/providers/Microsoft.Insights/components/${appInsightsName}'
     managedIdentityClientId: identity.outputs.clientId
-    auditLogUrl: auditLogUrl
-    auditApiKey: auditApiKey
+    storageQueueUrl: storage.outputs.auditQueueUrl
   }
 }
 

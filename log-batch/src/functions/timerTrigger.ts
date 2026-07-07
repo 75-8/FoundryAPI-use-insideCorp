@@ -1,5 +1,6 @@
 import { app, InvocationContext } from '@azure/functions';
-import { AuditLogRecord, getBlobServiceClient } from './auditQueue';
+import { BlobServiceClient } from '@azure/storage-blob';
+import { DefaultAzureCredential } from '@azure/identity';
 import * as appInsights from 'applicationinsights';
 import * as parquet from '@dsnp/parquetjs';
 import * as fs from 'fs';
@@ -11,6 +12,44 @@ if (process.env.APPLICATIONINSIGHTS_CONNECTION_STRING) {
   appInsights.setup().start();
 }
 
+interface AuditLogRecord {
+  timestamp: string;
+  requestId: string;
+  oid: string;
+  applicationId: string;
+  subscriptionId: string;
+  deployment: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  responseTimeMs: number;
+  statusCode: number;
+}
+
+let cachedBlobServiceClient: BlobServiceClient | null = null;
+
+function getBlobServiceClient(): BlobServiceClient {
+  if (cachedBlobServiceClient) {
+    return cachedBlobServiceClient;
+  }
+
+  const endpoint = process.env.AZURE_STORAGE_BLOB_ENDPOINT;
+  if (!endpoint) {
+    throw new Error('AZURE_STORAGE_BLOB_ENDPOINT environment variable is missing.');
+  }
+
+  if (endpoint.startsWith('http://127.0.0.1') || endpoint.includes('localhost')) {
+    const connStr = process.env.AzureWebJobsStorage || 'UseDevelopmentStorage=true';
+    cachedBlobServiceClient = BlobServiceClient.fromConnectionString(connStr);
+  } else {
+    cachedBlobServiceClient = new BlobServiceClient(endpoint, new DefaultAzureCredential());
+  }
+
+  return cachedBlobServiceClient;
+}
+
+// Helper to download stream as string
 async function streamToString(readableStream: NodeJS.ReadableStream): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: string[] = [];
@@ -28,12 +67,12 @@ export async function auditLogBatch(myTimer: any, context: InvocationContext): P
   context.log(`Timer trigger function started.`);
 
   const blobServiceClient = getBlobServiceClient();
-  const rawContainerClient = blobServiceClient.getContainerClient(process.env.ANALYTICS_CONTAINER || 'analytics-log');
-  const archiveContainerClient = blobServiceClient.getContainerClient(process.env.ARCHIVE_CONTAINER || 'archive-log');
+  const rawContainerClient = blobServiceClient.getContainerClient('raw-log');
+  const archiveContainerClient = blobServiceClient.getContainerClient('archive-log');
 
   // Verify containers exist (optional helper but good for safety)
   if (!(await rawContainerClient.exists())) {
-    context.warn(`Container 'analytics-log' does not exist.`);
+    context.warn(`Container 'raw-log' does not exist.`);
     return;
   }
 
@@ -46,11 +85,11 @@ export async function auditLogBatch(myTimer: any, context: InvocationContext): P
   }
 
   if (blobs.length === 0) {
-    context.log(`No analytics audit log JSON blobs found to process.`);
+    context.log(`No raw audit log JSON blobs found to process.`);
     return;
   }
 
-  context.log(`Found ${blobs.length} analytics JSON blobs. Grouping by date...`);
+  context.log(`Found ${blobs.length} raw JSON blobs. Grouping by date...`);
 
   // 2. Group blobs by date key (YYYY-MM-DD)
   const groups: { [dateKey: string]: string[] } = {};
@@ -61,11 +100,7 @@ export async function auditLogBatch(myTimer: any, context: InvocationContext): P
     let month = '';
     let day = '';
 
-    if (parts.length >= 3 && parts[0].startsWith('year=')) {
-      year = parts[0].replace('year=', '');
-      month = parts[1].replace('month=', '');
-      day = parts[2].replace('day=', '');
-    } else if (parts.length >= 4 && parts[0] === 'raw-log') {
+    if (parts.length >= 4 && parts[0] === 'raw-log') {
       year = parts[1];
       month = parts[2];
       day = parts[3];
@@ -93,26 +128,15 @@ export async function auditLogBatch(myTimer: any, context: InvocationContext): P
     timestamp: { type: 'UTF8' },
     requestId: { type: 'UTF8' },
     oid: { type: 'UTF8' },
-    tid: { type: 'UTF8' },
-    sub: { type: 'UTF8' },
-    appid: { type: 'UTF8' },
-    azp: { type: 'UTF8' },
+    applicationId: { type: 'UTF8' },
+    subscriptionId: { type: 'UTF8' },
     deployment: { type: 'UTF8' },
     model: { type: 'UTF8' },
-    operation: { type: 'UTF8' },
     promptTokens: { type: 'INT64' },
     completionTokens: { type: 'INT64' },
     totalTokens: { type: 'INT64' },
-    httpStatus: { type: 'INT64' },
-    backendStatus: { type: 'INT64' },
-    latencyMs: { type: 'INT64' },
-    backendLatencyMs: { type: 'INT64' },
-    correlationId: { type: 'UTF8' },
-    traceparent: { type: 'UTF8' },
-    clientIp: { type: 'UTF8' },
-    userAgent: { type: 'UTF8' },
-    xMsClientRequestId: { type: 'UTF8' },
-    xMsRequestId: { type: 'UTF8' },
+    responseTimeMs: { type: 'INT64' },
+    statusCode: { type: 'INT64' },
   });
 
   // 4. Process each date group
@@ -149,33 +173,22 @@ export async function auditLogBatch(myTimer: any, context: InvocationContext): P
           timestamp: record.timestamp,
           requestId: record.requestId,
           oid: record.oid,
-          tid: record.tid || '',
-          sub: record.sub || '',
-          appid: record.appid || '',
-          azp: record.azp || '',
-          deployment: record.deployment || '',
-          model: record.model || '',
-          operation: record.operation || '',
+          applicationId: record.applicationId,
+          subscriptionId: record.subscriptionId,
+          deployment: record.deployment,
+          model: record.model,
           promptTokens: record.promptTokens,
           completionTokens: record.completionTokens,
           totalTokens: record.totalTokens,
-          httpStatus: record.httpStatus,
-          backendStatus: record.backendStatus || 0,
-          latencyMs: record.latencyMs || 0,
-          backendLatencyMs: record.backendLatencyMs || 0,
-          correlationId: record.correlationId || '',
-          traceparent: record.traceparent || '',
-          clientIp: record.clientIp || '',
-          userAgent: record.userAgent || '',
-          xMsClientRequestId: record.xMsClientRequestId || '',
-          xMsRequestId: record.xMsRequestId || '',
+          responseTimeMs: record.responseTimeMs,
+          statusCode: record.statusCode,
         });
       }
       await writer.close();
 
       // Upload Parquet to archive-log container
       const [year, month, day] = dateKey.split('-');
-      const archiveBlobName = `year=${year}/month=${month}/day=${day}/audit-${Date.now()}.parquet`;
+      const archiveBlobName = `year=${year}/month=${month}/day=${day}/audit.parquet`;
       const archiveBlobClient = archiveContainerClient.getBlockBlobClient(archiveBlobName);
 
       const fileBuffer = fs.readFileSync(tempFilePath);
@@ -184,7 +197,7 @@ export async function auditLogBatch(myTimer: any, context: InvocationContext): P
       });
       context.log(`Archived parquet uploaded to: ${archiveBlobName}`);
 
-      // Delete analytics JSON blobs after successful archive
+      // Delete raw JSON blobs after successful archive
       for (const blobName of groups[dateKey]) {
         try {
           const blobClient = rawContainerClient.getBlobClient(blobName);

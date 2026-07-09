@@ -33,6 +33,9 @@ Infrastructure as Code（IaC）はBicepを使用し、Azureリソースはすべ
 - Logging
 - RBAC
 - Diagnostic Settings
+- queue
+- blob
+- azure event grid
 
 対象外
 

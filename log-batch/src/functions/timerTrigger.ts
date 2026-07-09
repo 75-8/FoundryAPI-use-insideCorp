@@ -6,6 +6,7 @@ import * as parquet from '@dsnp/parquetjs';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { groupBlobNamesByDate } from './auditLogBatchUtils';
 
 // Initialize Application Insights SDK
 if (process.env.APPLICATIONINSIGHTS_CONNECTION_STRING) {
@@ -91,37 +92,7 @@ export async function auditLogBatch(myTimer: any, context: InvocationContext): P
 
   context.log(`Found ${blobs.length} raw JSON blobs. Grouping by date...`);
 
-  // 2. Group blobs by date key (YYYY-MM-DD)
-  const groups: { [dateKey: string]: string[] } = {};
-  for (const blobName of blobs) {
-    // Expected structure: YYYY/MM/DD/requestId.json or raw-log/YYYY/MM/DD/requestId.json
-    const parts = blobName.split('/');
-    let year = '';
-    let month = '';
-    let day = '';
-
-    if (parts.length >= 4 && parts[0] === 'raw-log') {
-      year = parts[1];
-      month = parts[2];
-      day = parts[3];
-    } else if (parts.length >= 3) {
-      year = parts[0];
-      month = parts[1];
-      day = parts[2];
-    } else {
-      // Fallback if not grouped by folders
-      const today = new Date();
-      year = String(today.getUTCFullYear());
-      month = String(today.getUTCMonth() + 1).padStart(2, '0');
-      day = String(today.getUTCDate()).padStart(2, '0');
-    }
-
-    const dateKey = `${year}-${month}-${day}`;
-    if (!groups[dateKey]) {
-      groups[dateKey] = [];
-    }
-    groups[dateKey].push(blobName);
-  }
+  const groups = groupBlobNamesByDate(blobs);
 
   // 3. Define Parquet Schema matching audit log structure
   const parquetSchema = new parquet.ParquetSchema({

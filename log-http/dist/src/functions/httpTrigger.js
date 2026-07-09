@@ -38,39 +38,64 @@ const functions_1 = require("@azure/functions");
 const storage_blob_1 = require("@azure/storage-blob");
 const identity_1 = require("@azure/identity");
 const appInsights = __importStar(require("applicationinsights"));
+const auditLog_1 = require("../types/auditLog");
+const auditLogUtils_1 = require("./auditLogUtils");
+// ---------------------------------------------------------------------------
+// 環境変数の一元管理 (シークレット候補は FunctionConfig に定義済み)
+// ---------------------------------------------------------------------------
+/** process.env から設定値を読み込む */
+function loadConfig() {
+    return {
+        /** [シークレット] x-api-key ヘッダーの期待値。Key Vault / App Settings で管理する。 */
+        auditApiKey: process.env.AUDIT_API_KEY,
+        /** Blob Storage エンドポイント URL */
+        blobEndpoint: process.env.AZURE_STORAGE_BLOB_ENDPOINT,
+        /** ローカル開発用ストレージエミュレータ接続文字列 */
+        azureWebJobsStorage: process.env.AzureWebJobsStorage,
+        /** [シークレット] Application Insights 接続文字列。Key Vault / App Settings で管理する。 */
+        appInsightsConnStr: process.env.APPLICATIONINSIGHTS_CONNECTION_STRING,
+    };
+}
+const config = loadConfig();
 // Initialize Application Insights SDK
-if (process.env.APPLICATIONINSIGHTS_CONNECTION_STRING) {
+if (config.appInsightsConnStr) {
     appInsights.setup().start();
 }
-// Client lazily initialized to speed up cold starts
+// ---------------------------------------------------------------------------
+// Blob Service Client (コールドスタート高速化のためキャッシュ)
+// ---------------------------------------------------------------------------
 let cachedBlobServiceClient = null;
 function getBlobServiceClient() {
     if (cachedBlobServiceClient) {
         return cachedBlobServiceClient;
     }
-    const endpoint = process.env.AZURE_STORAGE_BLOB_ENDPOINT;
-    if (!endpoint) {
+    const { blobEndpoint, azureWebJobsStorage } = config;
+    if (!blobEndpoint) {
         throw new Error('AZURE_STORAGE_BLOB_ENDPOINT environment variable is missing.');
     }
     // Handle local development storage emulator
-    if (endpoint.startsWith('http://127.0.0.1') || endpoint.includes('localhost')) {
-        const connStr = process.env.AzureWebJobsStorage || 'UseDevelopmentStorage=true';
+    if (blobEndpoint.startsWith('http://127.0.0.1') || blobEndpoint.includes('localhost')) {
+        const connStr = azureWebJobsStorage ?? 'UseDevelopmentStorage=true';
         cachedBlobServiceClient = storage_blob_1.BlobServiceClient.fromConnectionString(connStr);
     }
     else {
-        // Managed Identity auth for production
-        cachedBlobServiceClient = new storage_blob_1.BlobServiceClient(endpoint, new identity_1.DefaultAzureCredential());
+        // Managed Identity auth for production (SEC-001, FR-004)
+        cachedBlobServiceClient = new storage_blob_1.BlobServiceClient(blobEndpoint, new identity_1.DefaultAzureCredential());
     }
     return cachedBlobServiceClient;
 }
+// ---------------------------------------------------------------------------
+// HTTP トリガーハンドラー
+// ---------------------------------------------------------------------------
 async function auditLogHttp(request, context) {
     context.log(`Audit log HTTP trigger received a request.`);
     // 1. Authenticate Request
     const apiKey = request.headers.get('x-api-key');
-    const expectedApiKey = process.env.AUDIT_API_KEY;
-    if (expectedApiKey && apiKey !== expectedApiKey) {
+    const { auditApiKey } = config;
+    if (auditApiKey && apiKey !== auditApiKey) {
         context.warn(`Unauthorized access attempt. Invalid x-api-key.`);
-        return { status: 401, body: JSON.stringify({ error: 'Unauthorized: Invalid API key.' }) };
+        const errBody = { error: 'Unauthorized: Invalid API key.' };
+        return { status: 401, body: JSON.stringify(errBody) };
     }
     // 2. Parse and Validate Body
     let body;
@@ -78,29 +103,28 @@ async function auditLogHttp(request, context) {
         body = (await request.json());
     }
     catch (err) {
-        context.error(`Failed to parse body JSON: ${err.message}`);
-        return { status: 400, body: JSON.stringify({ error: 'Invalid JSON payload.' }) };
+        const message = err instanceof Error ? err.message : String(err);
+        context.error(`Failed to parse body JSON: ${message}`);
+        const errBody = { error: 'Invalid JSON payload.' };
+        return { status: 400, body: JSON.stringify(errBody) };
     }
-    if (!body.timestamp ||
-        !body.requestId ||
-        body.oid === undefined ||
-        body.promptTokens === undefined ||
-        body.completionTokens === undefined ||
-        body.totalTokens === undefined ||
-        body.responseTimeMs === undefined ||
-        body.statusCode === undefined) {
-        context.warn(`Validation failed. Missing required fields in audit payload.`);
-        return {
-            status: 400,
-            body: JSON.stringify({
-                error: 'Missing required audit fields. Verify timestamp, requestId, oid, promptTokens, completionTokens, totalTokens, responseTimeMs, and statusCode.',
-            }),
+    // 必須フィールドの一括バリデーション (REQUIRED_AUDIT_FIELDS を使用)
+    const missingFields = auditLog_1.REQUIRED_AUDIT_FIELDS.filter((field) => body[field] === undefined || body[field] === null || body[field] === '');
+    if (missingFields.length > 0) {
+        context.warn(`Validation failed. Missing required fields: ${missingFields.join(', ')}`);
+        const errBody = {
+            error: `Missing required audit fields: ${missingFields.join(', ')}.`,
         };
+        return { status: 400, body: JSON.stringify(errBody) };
     }
+    // 型が確定しているため as キャストでレコードを構築
     const logRecord = {
         timestamp: String(body.timestamp),
         requestId: String(body.requestId),
         oid: String(body.oid),
+        // AU-002: upn, tenantId は可能な限り取得する (任意)
+        upn: String(body.upn ?? ''),
+        tenantId: String(body.tenantId ?? ''),
         applicationId: String(body.applicationId ?? ''),
         subscriptionId: String(body.subscriptionId ?? ''),
         deployment: String(body.deployment ?? ''),
@@ -111,7 +135,7 @@ async function auditLogHttp(request, context) {
         responseTimeMs: Number(body.responseTimeMs),
         statusCode: Number(body.statusCode),
     };
-    // 3. Forward to Log Analytics / App Insights
+    // 3. Forward to Log Analytics / App Insights (AU-001)
     if (appInsights.defaultClient) {
         appInsights.defaultClient.trackTrace({
             message: JSON.stringify(logRecord),
@@ -119,17 +143,12 @@ async function auditLogHttp(request, context) {
         });
     }
     else {
-        // Fallback console log which gets captured by default workspace diagnostic logging
+        // Fallback: default workspace diagnostic logging が拾う (AU-001)
         context.log(JSON.stringify(logRecord));
     }
-    // 4. Save to Blob Storage (Raw Container)
+    // 4. Save to Blob Storage - Raw Container (AU-001)
     try {
-        const date = new Date(logRecord.timestamp);
-        const isValidDate = !isNaN(date.getTime());
-        const year = isValidDate ? date.getUTCFullYear() : new Date().getUTCFullYear();
-        const month = String((isValidDate ? date.getUTCMonth() : new Date().getUTCMonth()) + 1).padStart(2, '0');
-        const day = String(isValidDate ? date.getUTCDate() : new Date().getUTCDate()).padStart(2, '0');
-        const blobName = `raw-log/${year}/${month}/${day}/${logRecord.requestId}.json`;
+        const blobName = (0, auditLogUtils_1.buildBlobName)(logRecord.timestamp, logRecord.requestId);
         const blobServiceClient = getBlobServiceClient();
         const containerClient = blobServiceClient.getContainerClient('raw-log');
         const blockBlobClient = containerClient.getBlockBlobClient(blobName);
@@ -140,13 +159,15 @@ async function auditLogHttp(request, context) {
         context.log(`Successfully uploaded audit log raw JSON to blob: ${blobName}`);
     }
     catch (err) {
-        context.error(`Failed to upload raw log to blob storage: ${err.message}`);
-        // Non-blocking failure, return 200 as audit log is best effort at destination
+        const message = err instanceof Error ? err.message : String(err);
+        context.error(`Failed to upload raw log to blob storage: ${message}`);
+        // Non-blocking failure — 監査ログはベストエフォートで配信する
     }
+    const successBody = { status: 'Success', requestId: logRecord.requestId };
     return {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'Success', requestId: logRecord.requestId }),
+        body: JSON.stringify(successBody),
     };
 }
 functions_1.app.http('audit', {

@@ -10,6 +10,7 @@ import {
   FunctionConfig,
   REQUIRED_AUDIT_FIELDS,
 } from '../types/auditLog';
+import { buildBlobName } from './auditLogUtils';
 
 // ---------------------------------------------------------------------------
 // 環境変数の一元管理 (シークレット候補は FunctionConfig に定義済み)
@@ -138,13 +139,7 @@ export async function auditLogHttp(request: HttpRequest, context: InvocationCont
 
   // 4. Save to Blob Storage - Raw Container (AU-001)
   try {
-    const date = new Date(logRecord.timestamp);
-    const isValidDate = !isNaN(date.getTime());
-    const year = isValidDate ? date.getUTCFullYear() : new Date().getUTCFullYear();
-    const month = String((isValidDate ? date.getUTCMonth() : new Date().getUTCMonth()) + 1).padStart(2, '0');
-    const day = String(isValidDate ? date.getUTCDate() : new Date().getUTCDate()).padStart(2, '0');
-
-    const blobName = `raw-log/${year}/${month}/${day}/${logRecord.requestId}.json`;
+    const blobName = buildBlobName(logRecord.timestamp, logRecord.requestId);
     const blobServiceClient = getBlobServiceClient();
     const containerClient = blobServiceClient.getContainerClient('raw-log');
     const blockBlobClient = containerClient.getBlockBlobClient(blobName);

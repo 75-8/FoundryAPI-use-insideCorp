@@ -29,7 +29,7 @@ resource funcHttp 'Microsoft.Web/sites@2022-09-01' = {
   properties: {
     serverFarmId: asp.id
     siteConfig: {
-      linuxFxVersion: 'NODE|22'
+      linuxFxVersion: 'NODE|16'
       appSettings: [
         {
           name: 'FUNCTIONS_WORKER_RUNTIME'
@@ -91,7 +91,7 @@ resource funcBatch 'Microsoft.Web/sites@2022-09-01' = {
   properties: {
     serverFarmId: asp.id
     siteConfig: {
-      linuxFxVersion: 'NODE|22'
+      linuxFxVersion: 'NODE|16'
       appSettings: [
         {
           name: 'FUNCTIONS_WORKER_RUNTIME'

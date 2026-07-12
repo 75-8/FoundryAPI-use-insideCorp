@@ -97,9 +97,9 @@ describe('archiveDaily', () => {
                 { name: '2026/07/12/share-2.json' },
             ])),
             getBlobClient: jest.fn().mockReturnValue({
-                download: jest.fn().mockResolvedValue({
+                download: jest.fn().mockImplementation(() => Promise.resolve({
                     readableStreamBody: createReadableStream(JSON.stringify(record)),
-                }),
+                })),
             }),
         };
         const archiveContainer = {

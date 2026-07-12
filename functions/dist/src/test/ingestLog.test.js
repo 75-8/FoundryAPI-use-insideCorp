@@ -35,9 +35,15 @@ jest.mock('../lib/config.js', () => ({
     }),
 }));
 jest.mock('../lib/cursorManager.js');
-jest.mock('../lib/diagnosticParser.js');
+jest.mock('../lib/diagnosticParser.js', () => ({
+    parseDiagnosticData: jest.fn(),
+    parseDiagnosticLines: jest.fn(),
+}));
 jest.mock('../lib/poisonBlobWriter.js');
 describe('ingestLog', () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+    });
     describe('getTargetHourPrefixes', () => {
         it('should return 2 prefixes (current hour + previous hour)', () => {
             const now = new Date('2026-07-12T14:30:00Z');
@@ -97,6 +103,84 @@ describe('ingestLog', () => {
             };
             await ingestLogHandler({}, context);
             expect(context.log).toHaveBeenCalledWith(expect.stringContaining('No target diagnostic blobs found'));
+        });
+        it('should advance cursor only through successfully handled lines when queue send fails (§11)', async () => {
+            const { getBlobServiceClient, getQueueServiceClient } = require('../lib/blobClients.js');
+            const { readCursor, writeCursor } = require('../lib/cursorManager.js');
+            const { parseDiagnosticLines } = require('../lib/diagnosticParser.js');
+            const currentPrefix = (0, ingestLog_js_1.getTargetHourPrefixes)(new Date())[0];
+            const blobPath = `resourceId=/subscriptions/s1/${currentPrefix}`;
+            const line1Bytes = 101;
+            const line2Bytes = 202;
+            const record1 = {
+                schemaVersion: '1.0',
+                shareId: 'share-1',
+                eventTime: '2026-07-12T14:00:00Z',
+                httpMethod: 'POST',
+                routePath: '/chat',
+                apiName: 'api',
+                operationName: 'op',
+                statusCode: 200,
+                latencyMs: 10,
+                clientIp: '10.0.0.1',
+                identity: {},
+                source: 'apim',
+            };
+            const record2 = { ...record1, shareId: 'share-2' };
+            readCursor.mockResolvedValue({ offset: 1000, lastUpdated: '' });
+            parseDiagnosticLines.mockReturnValue({
+                processedBytes: line1Bytes + line2Bytes,
+                lines: [
+                    { lineBytes: line1Bytes, record: record1 },
+                    { lineBytes: line2Bytes, record: record2 },
+                ],
+            });
+            const mockDownloadStream = {
+                async *[Symbol.asyncIterator]() {
+                    yield Buffer.from('dummy\n');
+                },
+            };
+            const diagnosticContainer = {
+                listBlobsFlat: jest.fn().mockReturnValue({
+                    async *[Symbol.asyncIterator]() {
+                        yield { name: blobPath };
+                    },
+                }),
+                getBlobClient: jest.fn().mockReturnValue({
+                    getProperties: jest.fn().mockResolvedValue({ contentLength: 1303 }),
+                    download: jest.fn().mockResolvedValue({ readableStreamBody: mockDownloadStream }),
+                }),
+            };
+            const cursorContainer = {};
+            const poisonContainer = {};
+            getBlobServiceClient.mockReturnValue({
+                getContainerClient: jest.fn((name) => {
+                    if (name === 'insights-logs-gatewaylogs')
+                        return diagnosticContainer;
+                    if (name === 'cursor')
+                        return cursorContainer;
+                    if (name === 'poison')
+                        return poisonContainer;
+                    return {};
+                }),
+            });
+            const sendMessage = jest
+                .fn()
+                .mockResolvedValueOnce({})
+                .mockRejectedValueOnce(new Error('queue unavailable'));
+            getQueueServiceClient.mockReturnValue({
+                getQueueClient: jest.fn().mockReturnValue({ sendMessage }),
+            });
+            const { ingestLogHandler } = require('../functions/ingestLog.js');
+            const context = {
+                log: jest.fn(),
+                warn: jest.fn(),
+                error: jest.fn(),
+            };
+            await ingestLogHandler({}, context);
+            expect(sendMessage).toHaveBeenCalledTimes(2);
+            expect(writeCursor).toHaveBeenCalledWith(cursorContainer, blobPath, 1000 + line1Bytes);
+            expect(writeCursor).not.toHaveBeenCalledWith(cursorContainer, blobPath, 1000 + line1Bytes + line2Bytes);
         });
     });
     describe('Queue message size validation', () => {

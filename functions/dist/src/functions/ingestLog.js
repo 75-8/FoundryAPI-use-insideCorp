@@ -135,15 +135,22 @@ async function processOneDiagnosticBlob(blobPath, diagnosticContainer, cursorCon
         return;
     }
     // ステップ4-5: JSON Lines 解析 → LogRecord 生成
-    const { records, processedBytes } = (0, diagnosticParser_js_1.parseDiagnosticData)(data, context);
+    const { lines, processedBytes } = (0, diagnosticParser_js_1.parseDiagnosticLines)(data, context);
     if (processedBytes === 0) {
         context.log(`ingestLog: No complete lines in diff data for ${blobPath}`);
         return;
     }
+    const records = lines.flatMap((line) => (line.record ? [line.record] : []));
     context.log(`ingestLog: Parsed ${records.length} records from ${blobPath}`);
     // ステップ6-9: サイズ検証 → Queue 送信
     let lastSuccessfulOffset = cursorState.offset;
-    for (const record of records) {
+    for (const line of lines) {
+        const record = line.record;
+        if (!record) {
+            // JSON破損や必須項目欠落は行単位でスキップし、処理済み境界としてカーソルを進める (§14)
+            lastSuccessfulOffset += line.lineBytes;
+            continue;
+        }
         const serialized = JSON.stringify(record);
         const messageBytes = Buffer.byteLength(serialized, 'utf-8');
         // ステップ6: 48KB サイズ検証 (§11 ステップ8)
@@ -159,6 +166,7 @@ async function processOneDiagnosticBlob(blobPath, diagnosticContainer, cursorCon
                 context.error(`ingestLog: Failed to write oversized message to Poison Blob: ${poisonErr instanceof Error ? poisonErr.message : String(poisonErr)}`);
             }
             // サイズ超過は再送しても解消しないため、カーソルは進める
+            lastSuccessfulOffset += line.lineBytes;
             continue;
         }
         // ステップ7: Storage Queue (buffer) へ送信 (§11 ステップ9)
@@ -166,6 +174,7 @@ async function processOneDiagnosticBlob(blobPath, diagnosticContainer, cursorCon
             // Queue メッセージは Base64 エンコードして送信
             const base64Message = Buffer.from(serialized).toString('base64');
             await queueClient.sendMessage(base64Message);
+            lastSuccessfulOffset += line.lineBytes;
         }
         catch (queueErr) {
             // Queue 送信失敗時はカーソルを更新せず、次回 Timer 実行時に再送信 (§11)
@@ -175,7 +184,11 @@ async function processOneDiagnosticBlob(blobPath, diagnosticContainer, cursorCon
         }
     }
     // ステップ8: カーソル更新（送信成功後のみ）(§11 ステップ10)
-    const newOffset = cursorState.offset + processedBytes;
+    const newOffset = lastSuccessfulOffset;
+    if (newOffset === cursorState.offset) {
+        context.log(`ingestLog: Cursor unchanged for ${blobPath}; no line was durably processed.`);
+        return;
+    }
     try {
         await (0, cursorManager_js_1.writeCursor)(cursorContainer, blobPath, newOffset);
         context.log(`ingestLog: Updated cursor for ${blobPath}: offset=${newOffset}`);

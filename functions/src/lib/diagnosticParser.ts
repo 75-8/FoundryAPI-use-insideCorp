@@ -45,6 +45,13 @@ interface DiagnosticLogEntry {
   [key: string]: unknown;
 }
 
+export interface ParsedDiagnosticLine {
+  /** This line's exact byte length, including the trailing newline. */
+  lineBytes: number;
+  /** Converted LogRecord. Null means the line was intentionally skipped after parsing. */
+  record: LogRecord | null;
+}
+
 /**
  * Diagnostic Blob から取得した差分データ（バイト列）をJSON Linesとして解析し、
  * 最後の完全な改行位置までを処理する。
@@ -59,38 +66,58 @@ export function parseDiagnosticData(
   data: Buffer,
   context: InvocationContext,
 ): { records: LogRecord[]; processedBytes: number } {
+  const { lines, processedBytes } = parseDiagnosticLines(data, context);
+  return {
+    records: lines.flatMap((line) => (line.record ? [line.record] : [])),
+    processedBytes,
+  };
+}
+
+/**
+ * Diagnostic Blob の差分データを、処理可能な行ごとのバイト長つきで解析する。
+ *
+ * ingestLog は Queue 送信に失敗した行の直前までしかカーソルを進めてはならないため、
+ * レコード単位の成否と元の行バイト長を保持する。
+ */
+export function parseDiagnosticLines(
+  data: Buffer,
+  context: InvocationContext,
+): { lines: ParsedDiagnosticLine[]; processedBytes: number } {
   const text = data.toString('utf-8');
-  const records: LogRecord[] = [];
+  const parsedLines: ParsedDiagnosticLine[] = [];
 
   // 末尾が改行で終わっていない場合、未完成な最終行は今回処理しない (§11)
   const lastNewlineIndex = text.lastIndexOf('\n');
   if (lastNewlineIndex === -1) {
     // 改行が1つもない → 処理対象なし（次回に持ち越し）
-    return { records: [], processedBytes: 0 };
+    return { lines: [], processedBytes: 0 };
   }
 
   const processableText = text.substring(0, lastNewlineIndex + 1);
   const processedBytes = Buffer.byteLength(processableText, 'utf-8');
-  const lines = processableText.split('\n').filter((line) => line.trim().length > 0);
+  const lines = processableText.match(/[^\n]*\n/g) ?? [];
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
+    const rawLine = lines[i];
+    const lineBytes = Buffer.byteLength(rawLine, 'utf-8');
+    const line = rawLine.trim();
+    if (!line) {
+      parsedLines.push({ lineBytes, record: null });
+      continue;
+    }
 
     try {
       const entry = JSON.parse(line) as DiagnosticLogEntry;
       const record = convertToLogRecord(entry);
-
-      if (record) {
-        records.push(record);
-      }
+      parsedLines.push({ lineBytes, record });
     } catch (err) {
       // 行単位でのJSON解析失敗は当該行をスキップし処理継続 (§14)
       context.warn(`Skipping malformed JSON line ${i + 1}: ${err instanceof Error ? err.message : String(err)}`);
+      parsedLines.push({ lineBytes, record: null });
     }
   }
 
-  return { records, processedBytes };
+  return { lines: parsedLines, processedBytes };
 }
 
 /**

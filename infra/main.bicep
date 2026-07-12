@@ -18,7 +18,7 @@ var identityName = '${apimName}-mi'
 var workbookName = 'wb-foundry-usage-${env}'
 var storageAccountName = take('st${basename}', 24)
 var auditApiKey = uniqueString(subscription().subscriptionId, 'audit-api-key')
-var auditLogUrl = 'https://func-http-${basename}.azurewebsites.net/api/audit'
+var auditLogUrl = 'https://func-${basename}.azurewebsites.net/api/audit'
 
 // Resource Group
 resource rg 'Microsoft.Resources/resourceGroups@2023-07-01' = {
@@ -66,6 +66,8 @@ module functions 'module/functions.bicep' = {
     basename: basename
     storageAccountName: storage.outputs.storageAccountName
     storageAccountBlobEndpoint: storage.outputs.blobEndpoint
+    managedIdentityResourceId: identity.outputs.resourceId
+    managedIdentityClientId: identity.outputs.clientId
   }
 }
 
@@ -89,8 +91,7 @@ module rbac 'module/rbac.bicep' = {
     foundryAccountName: foundryName
     principalId: identity.outputs.principalId
     storageAccountName: storage.outputs.storageAccountName
-    funcHttpPrincipalId: functions.outputs.funcHttpPrincipalId
-    funcBatchPrincipalId: functions.outputs.funcBatchPrincipalId
+    funcAppPrincipalId: functions.outputs.funcAppPrincipalId
   }
 }
 

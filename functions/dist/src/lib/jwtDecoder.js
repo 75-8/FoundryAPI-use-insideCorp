@@ -1,0 +1,73 @@
+"use strict";
+/**
+ * JWT デコード (§9)
+ *
+ * APIM Diagnostic Settings の出力に含まれる JWT の payload をデコードし、
+ * 利用者識別情報を抽出する。
+ * 署名検証は APIM 側の validate-jwt で実施済みのため、ここでは行わない (§7)。
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.decodeJwtPayload = decodeJwtPayload;
+exports.extractIdentity = extractIdentity;
+/**
+ * Base64url エンコードされた文字列をデコードする。
+ */
+function base64UrlDecode(str) {
+    // Base64url → Base64 変換
+    let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+    // パディング補完
+    const padding = base64.length % 4;
+    if (padding) {
+        base64 += '='.repeat(4 - padding);
+    }
+    return Buffer.from(base64, 'base64').toString('utf-8');
+}
+/**
+ * JWT トークンの payload 部分をデコードする（署名検証なし）。
+ *
+ * @param token JWT トークン文字列
+ * @returns デコードされた payload オブジェクト。デコード失敗時は null。
+ */
+function decodeJwtPayload(token) {
+    try {
+        const parts = token.split('.');
+        if (parts.length !== 3) {
+            return null;
+        }
+        const payloadStr = base64UrlDecode(parts[1]);
+        return JSON.parse(payloadStr);
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * JWT payload から利用者識別情報を抽出する (§9)。
+ *
+ * | 項目                | 取得元                      |
+ * |---------------------|-----------------------------|
+ * | subjectId           | oid → sub                   |
+ * | tenantId            | tid                         |
+ * | userPrincipalName   | upn → preferred_username    |
+ * | appId               | appid → azp                 |
+ *
+ * @param payload JWT payload（デコード済み）
+ * @returns LogRecordIdentity
+ */
+function extractIdentity(payload) {
+    if (!payload) {
+        return {
+            subjectId: '',
+            tenantId: '',
+            userPrincipalName: '',
+            appId: '',
+        };
+    }
+    return {
+        subjectId: String(payload.oid ?? payload.sub ?? ''),
+        tenantId: String(payload.tid ?? ''),
+        userPrincipalName: String(payload.upn ?? payload.preferred_username ?? ''),
+        appId: String(payload.appid ?? payload.azp ?? ''),
+    };
+}
+//# sourceMappingURL=jwtDecoder.js.map
